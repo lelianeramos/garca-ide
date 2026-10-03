@@ -1,0 +1,136 @@
+.ui-icon {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.explorer-heading button {
+  display: inline-grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  padding: 0;
+}
+
+.explorer-heading button svg,
+.workspace-controls button svg,
+.add-output svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.workspace-controls button,
+.add-output {
+  display: inline-grid;
+  place-items: center;
+}
+
+.workspace-controls button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.tree-row .twisty {
+  width: 14px;
+  height: 14px;
+  transition: transform 120ms ease;
+}
+
+.tree-row .folder-icon {
+  color: #f0b83e;
+  fill: rgba(240, 184, 62, 0.16);
+}
+
+.tree-row .file-icon {
+  width: 16px;
+  height: 16px;
+  color: #8fc7f7;
+}
+
+.tree-row .lib-icon {
+  color: #9f82ff;
+}
+
+.tree-row .tree-spacer {
+  display: inline-block;
+  width: 14px;
+  height: 1px;
+  flex: 0 0 14px;
+}
+
+.tree-row.broken .file-icon {
+  color: #ff8d8d;
+}
+
+.tree-row .dirty {
+  margin-left: auto;
+  color: #63beff;
+  font-size: 8px;
+}
+
+.folder-row {
+  transform-origin: left center;
+  transition: background-color 140ms ease, color 140ms ease, transform 140ms ease;
+}
+
+.folder-row .twisty {
+  transition: transform 160ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.folder-row.expanded .twisty {
+  transform: rotate(90deg);
+}
+
+.folder-row.collapsed .twisty {
+  transform: rotate(0deg);
+}
+
+.folder-row .folder-icon {
+  transition: transform 160ms ease, color 160ms ease, fill 160ms ease;
+}
+
+.folder-row.expanded .folder-icon {
+  color: #ffc85a;
+  transform: translateY(1px) scale(1.04);
+}
+
+.folder-row.folding {
+  transform: scale(.985);
+  opacity: .72;
+}
+
+.tree-enter {
+  animation: tree-row-enter 150ms cubic-bezier(.2, .75, .2, 1) both;
+}
+
+@keyframes tree-row-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .folder-row,
+  .folder-row .twisty,
+  .folder-row .folder-icon,
+  .tree-enter {
+    animation: none;
+    transition: none;
+  }
+}

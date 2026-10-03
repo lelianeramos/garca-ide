@@ -1,0 +1,98 @@
+{
+  "metadata": {
+    "name": "Catálogo de API Pybricks",
+    "version": "4.0.0",
+    "updated": "2026-10-01",
+    "source": "https://docs.pybricks.com/en/latest/",
+    "purpose": "Autocomplete, validação e correção conservadora de nomes da API oficial"
+  },
+  "modules": {
+    "pybricks.hubs": {
+      "classes": {
+        "PrimeHub": {"constructor": ["top_side=Axis.Z", "front_side=Axis.X", "broadcast_channel=None", "observe_channels=[]"], "members": ["battery", "ble", "buttons", "display", "imu", "light", "speaker", "system"]},
+        "InventorHub": {"constructor": ["top_side=Axis.Z", "front_side=Axis.X", "broadcast_channel=None", "observe_channels=[]"], "members": ["battery", "ble", "buttons", "display", "imu", "light", "speaker", "system"]},
+        "TechnicHub": {"constructor": ["top_side=Axis.Z", "front_side=Axis.X", "broadcast_channel=None", "observe_channels=[]"], "members": ["battery", "ble", "buttons", "imu", "light", "system"]},
+        "CityHub": {"constructor": ["broadcast_channel=None", "observe_channels=[]"], "members": ["battery", "ble", "buttons", "light", "system"]},
+        "MoveHub": {"constructor": ["broadcast_channel=None", "observe_channels=[]"], "members": ["battery", "ble", "buttons", "imu", "light", "system"]},
+        "EssentialHub": {"constructor": [], "members": ["battery", "buttons", "light", "speaker", "system"]}
+      }
+    },
+    "pybricks.pupdevices": {
+      "classes": {
+        "Motor": {"constructor": ["port", "positive_direction=Direction.CLOCKWISE", "gears=None", "reset_angle=True", "profile=None"], "methods": ["angle", "reset_angle", "speed", "load", "stalled", "run", "dc", "stop", "brake", "hold", "run_time", "run_angle", "run_target", "run_until_stalled", "track_target", "done", "settings", "close"], "properties": ["control", "model"]},
+        "DCMotor": {"constructor": ["port", "positive_direction=Direction.CLOCKWISE"], "methods": ["dc", "stop", "brake", "settings", "close"]},
+        "ColorSensor": {"constructor": ["port"], "methods": ["color", "reflection", "ambient", "hsv", "detectable_colors"], "properties": ["lights"]},
+        "UltrasonicSensor": {"constructor": ["port"], "methods": ["distance", "presence"], "properties": ["lights"]},
+        "ForceSensor": {"constructor": ["port"], "methods": ["force", "distance", "pressed", "touched"]},
+        "ColorDistanceSensor": {"constructor": ["port"], "methods": ["color", "distance", "reflection", "ambient", "hsv"], "properties": ["light"]},
+        "TiltSensor": {"constructor": ["port"], "methods": ["tilt", "up"]},
+        "InfraredSensor": {"constructor": ["port"], "methods": ["distance", "buttons", "keypad"]},
+        "Light": {"constructor": ["port"], "methods": ["on", "off"]},
+        "ColorLightMatrix": {"constructor": ["port"], "methods": ["on", "off"]},
+        "Remote": {"constructor": ["name=None", "timeout=10000"], "methods": ["name", "buttons", "light", "disconnect"]}
+      }
+    },
+    "pybricks.iodevices": {
+      "classes": {
+        "PUPDevice": {"constructor": ["port"], "methods": ["info", "read", "write"]},
+        "AnalogSensor": {"constructor": ["port", "passive=False"], "methods": ["voltage", "resistance", "active", "passive"]},
+        "I2CDevice": {"constructor": ["port", "address"], "methods": ["read", "write"]},
+        "UARTDevice": {"constructor": ["port", "baudrate", "timeout=2000"], "methods": ["read", "read_all", "write", "waiting"]},
+        "LWP3Device": {"constructor": ["hub_kind", "name=None", "timeout=10000"], "methods": ["name", "read", "write", "disconnect"]}
+      }
+    },
+    "pybricks.parameters": {
+      "classes": {
+        "Axis": {"constants": ["X", "Y", "Z"]},
+        "Button": {"constants": ["LEFT", "RIGHT", "CENTER", "BLUETOOTH", "BEACON", "PLUS", "MINUS", "RED", "LEFT_PLUS", "LEFT_MINUS", "RIGHT_PLUS", "RIGHT_MINUS"]},
+        "Color": {"constants": ["RED", "ORANGE", "YELLOW", "GREEN", "CYAN", "BLUE", "VIOLET", "MAGENTA", "WHITE", "GRAY", "BLACK", "NONE"]},
+        "Direction": {"constants": ["CLOCKWISE", "COUNTERCLOCKWISE"]},
+        "Icon": {"constants": ["ARROW_DOWN", "ARROW_LEFT", "ARROW_RIGHT", "ARROW_UP", "CIRCLE", "DIAMOND", "HAPPY", "HEART", "NO", "SAD", "SQUARE", "TRIANGLE_DOWN", "TRIANGLE_LEFT", "TRIANGLE_RIGHT", "TRIANGLE_UP"]},
+        "Port": {"constants": ["A", "B", "C", "D", "E", "F", "S1", "S2", "S3", "S4"]},
+        "Side": {"constants": ["TOP", "BOTTOM", "LEFT", "RIGHT", "FRONT", "BACK"]},
+        "Stop": {"constants": ["COAST", "BRAKE", "HOLD", "NONE"]}
+      }
+    },
+    "pybricks.robotics": {
+      "classes": {
+        "DriveBase": {"constructor": ["left_motor", "right_motor", "wheel_diameter", "axle_track"], "methods": ["straight", "turn", "curve", "drive", "stop", "distance", "angle", "state", "reset", "settings", "done", "stalled"], "properties": ["distance_control", "heading_control"]},
+        "Car": {"constructor": ["steer_motor", "drive_motors"], "methods": ["steer", "drive"]}
+      }
+    },
+    "pybricks.tools": {
+      "functions": {
+        "wait": ["time"],
+        "multitask": ["*coroutines", "race=False"],
+        "run_task": ["coroutine"]
+      },
+      "classes": {
+        "StopWatch": {"constructor": [], "methods": ["time", "pause", "resume", "reset"]},
+        "Matrix": {"constructor": ["data"], "methods": ["T"], "operators": ["+", "-", "*", "@"]}
+      }
+    },
+    "pybricks.messaging": {
+      "classes": {
+        "BluetoothMailboxServer": {"constructor": [], "methods": ["wait_for_connection"]},
+        "BluetoothMailboxClient": {"constructor": [], "methods": ["connect"]},
+        "TextMailbox": {"constructor": ["name", "connection"], "methods": ["send", "read", "wait", "wait_new"]},
+        "NumericMailbox": {"constructor": ["name", "connection"], "methods": ["send", "read", "wait", "wait_new"]},
+        "LogicMailbox": {"constructor": ["name", "connection"], "methods": ["send", "read", "wait", "wait_new"]}
+      }
+    }
+  },
+  "componentTypes": {
+    "display": ["orientation", "off", "pixel", "char", "icon", "number", "text", "animate"],
+    "light": ["on", "off", "blink", "animate"],
+    "speaker": ["volume", "beep", "play_notes"],
+    "imu": ["ready", "stationary", "up", "tilt", "acceleration", "angular_velocity", "rotation", "heading", "reset_heading", "settings"],
+    "buttons": ["pressed"],
+    "battery": ["voltage", "current"],
+    "system": ["name", "storage", "reset_storage", "shutdown", "reset", "set_stop_button", "info"],
+    "ble": ["broadcast", "observe", "signal_strength"],
+    "control": ["limits", "pid", "target_tolerances", "stall_tolerances", "trajectory", "done", "stalled", "load"],
+    "model": ["state", "settings"],
+    "lights": ["on", "off"],
+    "distance_control": ["limits", "pid", "target_tolerances", "stall_tolerances", "done", "stalled"],
+    "heading_control": ["limits", "pid", "target_tolerances", "stall_tolerances", "done", "stalled"]
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "garca-de-botas-code-studio",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs",
+    "test:blocks": "node tests/block_engine.test.cjs",
+    "test": "npm run test:blocks && python3 -m unittest discover -s tests -v"
+  },
+  "devDependencies": {
+    "@pybricks/mpy-cross-v6": "^2.0.0",
+    "esbuild": "^0.25.10"
+  }
+}
