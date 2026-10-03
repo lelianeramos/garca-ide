@@ -1,4 +1,5 @@
 import unittest
+import math
 from api.project.blocks import blockify
 from api.project.analyze import analyze
 from api.project.refactor import refactor
@@ -15,6 +16,11 @@ class CoreTests(unittest.TestCase):
         block=blockify('robot.settings(straight_speed=755)')['blocks'][0]
         self.assertEqual(block['schema'],'movement_speed')
         self.assertEqual(block['params']['percent'],75.5)
+
+    def test_default_wheel_is_62_4_mm(self):
+        block=blockify(f'robot.straight({math.pi * 62.4})')['blocks'][0]
+        self.assertEqual(block['schema'],'movement_straight')
+        self.assertAlmostEqual(block['params']['rotations'],1)
 
     def test_wait_decimal(self):
         block=blockify('wait(75500)')['blocks'][0]
