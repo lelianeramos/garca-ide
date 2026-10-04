@@ -2,6 +2,17 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "cleanUrls": true,
   "trailingSlash": false,
+  "github": {
+    "silent": true
+  },
+  "functions": {
+    "api/project/format.py": {
+      "includeFiles": "pybricks-api.json"
+    },
+    "api/project/semantic.py": {
+      "maxDuration": 30
+    }
+  },
   "headers": [
     {
       "source": "/(.*)",
@@ -10,6 +21,31 @@
         { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
         { "key": "Permissions-Policy", "value": "bluetooth=(self)" }
       ]
+    },
+    {
+      "source": "/vendor/(.*)",
+      "headers": [
+        { "key": "Content-Type", "value": "application/wasm" },
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
+      ]
+    },
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store" }
+      ]
     }
+  ],
+  "rewrites": [
+    { "source": "/api/project/semantic", "destination": "/api/project/semantic.py" },
+    { "source": "/api/project/format", "destination": "/api/project/format.py" },
+    { "source": "/api/project/analyze", "destination": "/api/project/analyze.py" },
+    { "source": "/api/project/blocks", "destination": "/api/project/blocks.py" },
+    { "source": "/api/project/bundle", "destination": "/api/project/bundle.py" },
+    { "source": "/api/project/refactor", "destination": "/api/project/refactor.py" },
+    { "source": "/api/validate", "destination": "/api/validate.py" },
+    { "source": "/api/github/commit", "destination": "/api/github/commit.js" },
+    { "source": "/api/github/stats", "destination": "/api/github/stats.js" },
+    { "source": "/api/github/avatar", "destination": "/api/github/avatar.js" }
   ]
 }

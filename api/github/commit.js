@@ -6,8 +6,38 @@ export default async function handler(request, response) {
   const body = request.body || {}, files = Array.isArray(body.files) ? body.files : body.path ? [{ path: body.path, content: body.content }] : [];
   if (!files.length || files.length > 100) return response.status(400).json({ error: 'Nenhum arquivo válido para commit' });
   for (const file of files) {
-    file.path = String(file.path || '').replace(/^\/+|\.\.(?:\/|$)/g, '');
-    if (!/^(?:[A-Za-z_]\w*\/)*[A-Za-z_]\w*\.py$/.test(file.path)) return response.status(400).json({ error: `Caminho Python inválido: ${file.path}` });
+    file.path = String(file.path || '').trim();
+
+    /*
+     * TRAVESSIA DE DIRETÓRIO — falhar fechado.
+     *
+     * A versão anterior "limpava" o caminho com replace(/^\/+|\.\.(?:\/|$)/g,'')
+     * e seguia em frente. Isso convertia "../../evil.py" em "evil.py" e o
+     * commit era aceito, escrevendo num lugar que ninguém pediu. Remover o
+     * "../" e aceitar é sanitização silenciosa: o cliente acha que escreveu
+     * onde mandou. O certo é RECUSAR e dizer por quê.
+     */
+    if (file.path.includes('..') || file.path.startsWith('/') || file.path.startsWith('\\') ||
+        file.path.includes('\0') || /^[A-Za-z]:/.test(file.path)) {
+      return response.status(400).json({ error: `Caminho inseguro (travessia de diretório): ${file.path}` });
+    }
+
+    /*
+     * 19.1 — o repositório tem estrutura fixa:
+     *   programacao/main.py
+     *   programacao/saidas/saida_N.py     (saídas são SEMPRE numeradas)
+     *   programacao/<módulos>.py
+     * Nada fora de programacao/ pode ser escrito pela interface.
+     *
+     * O lookahead (?!saidas/) impede que um arquivo não numerado escape pelo
+     * ramo genérico: sem ele, "saidas/saida_abc.py" era aceito como módulo
+     * comum e poluía a pasta de saídas.
+     */
+    const VALID_PATH = /^programacao\/(?:saidas\/saida_\d+|main|(?!saidas\/)(?:[A-Za-z_]\w*\/)*[A-Za-z_]\w*)\.py$/;
+    if (!VALID_PATH.test(file.path)) {
+      return response.status(400).json({ error: `Caminho fora da estrutura do projeto (esperado programacao/….py): ${file.path}` });
+    }
+
     if (!file.delete && (typeof file.content !== 'string' || file.content.length > 500_000)) return response.status(413).json({ error: `Arquivo inválido ou muito grande: ${file.path}` });
   }
   const contributors = [1,2,3,4].map(i => ({id:String(i),name:process.env[`CONTRIBUTOR_${i}_NAME`],username:process.env[`CONTRIBUTOR_${i}_USERNAME`],email:process.env[`CONTRIBUTOR_${i}_EMAIL`]})).filter(x=>x.name);

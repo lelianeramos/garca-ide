@@ -1,0 +1,32 @@
+# --------------------------------------------------------------------------
+# O que NÃO deve ser publicado na Vercel (S03 / Parte 29 F10)
+#
+# O objetivo principal é impedir que segredos e código de desenvolvimento
+# entrem no bundle. Foi um arquivo .mjs na raiz que fez a Vercel empacotar o
+# frontend como função serverless e falhar com
+# "ReferenceError: document is not defined". Nenhum .mjs fica na raiz.
+# --------------------------------------------------------------------------
+
+# Segredos — nunca publicar
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Servidor de desenvolvimento local (não é usado em produção)
+tools/
+
+# Testes e utilitários
+tests/
+pytest.ini
+
+# Ferramentas locais
+node_modules/
+.git/
+.github/
+.vercel/
+
+# Documentação interna
+docs/
+*.md
+!README.md

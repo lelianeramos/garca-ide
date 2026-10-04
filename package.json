@@ -1,16 +1,24 @@
 {
   "name": "garca-de-botas-code-studio",
   "version": "1.0.0",
+  "description": "IDE web de robótica FLL: blocos LEGO Education pt-BR + Python Pybricks com sincronização bidirecional, SPIKE Prime via Bluetooth.",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
-    "dev": "node server.mjs",
-    "start": "node server.mjs",
+    "dev": "node tools/dev-server.mjs",
+    "start": "node tools/dev-server.mjs",
+    "test": "npm run test:blocks && npm run test:api && npm run test:py",
     "test:blocks": "node tests/block_engine.test.cjs",
-    "test": "npm run test:blocks && python3 -m unittest discover -s tests -v"
+    "test:api": "node tests/github_commit.test.mjs && node tests/repository_path.test.mjs",
+    "test:py": "python3 -m unittest discover -s tests -v",
+    "test:semantic": "python3 -m unittest tests.test_semantic -v",
+    "fetch:wasm": "npm install @pybricks/mpy-cross-v6 --no-save && cp node_modules/@pybricks/mpy-cross-v6/build/mpy-cross-v6.wasm vendor/mpy-cross-v6.wasm && cp node_modules/@pybricks/mpy-cross-v6/build/mpy-cross-v6.js vendor/mpy-cross-v6.js",
+    "vercel:doctor": "node tools/check-deploy.mjs"
   },
   "devDependencies": {
-    "@pybricks/mpy-cross-v6": "^2.0.0",
-    "esbuild": "^0.25.10"
+    "@pybricks/mpy-cross-v6": "^2.0.0"
   }
 }
