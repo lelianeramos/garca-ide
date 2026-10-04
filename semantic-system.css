@@ -1,0 +1,1141 @@
+/* ==========================================================================
+   SEMANTIC SYSTEM — GARÇA DE BOTAS CODE STUDIO
+   --------------------------------------------------------------------------
+   Camada de correção e complemento do design system (Parte 20/21).
+   Resolve, entre outros:
+
+   1. BUG DOS NÚMEROS DE LINHA CONCATENADOS
+      A régua era texto corrido dentro de um contêiner white-space:pre. Sem
+      quebras reais, "1 2 3 4 5" virava a faixa "12345". Agora cada número é
+      um bloco próprio de altura fixa = altura da linha do editor (20px).
+      Concatenação torna-se estruturalmente impossível.
+
+   2. ROLAGEM DA PALETA DE BLOCOS
+      Pedido: "não quero scroll de scroll, quero ver as opções com a roda do
+      mouse sem aquele negócio feio e engessado". A barra de rolagem fica
+      invisível, a roda do mouse rola a lista, e a rolagem encadeia
+      naturalmente para o pai quando a lista chega ao fim.
+
+   3. B09 — contraste dos campos de bloco (mínimo 4.5:1 em todos os estados)
+   4. Parte 12.6 — estados visuais dos blocos
+   5. Parte 21 — densidade compacta ("zoom 80%")
+   ========================================================================== */
+
+:root {
+  --line-height-code: 20px;
+  --gutter-width: 42px;
+  --block-radius: 7px;
+  --block-notch-width: 30px;
+  --block-notch-left: 18px;
+  --block-min-height: 43px;
+  --block-padding: 9px 14px 10px 18px;
+  --cavity-height: 31px;
+  --reporter-radius: 999px;
+  --boolean-clip: polygon(
+    12px 0, calc(100% - 12px) 0, 100% 50%,
+    calc(100% - 12px) 100%, 12px 100%, 0 50%
+  );
+
+  --bg-app: #071525;
+  --bg-toolbar: #0b1c2f;
+  --bg-panel: #0d1e31;
+  --bg-workspace: #071a2b;
+  --bg-code: #071522;
+  --border: #20344a;
+  --text-primary: #f4f7fa;
+  --text-secondary: #aab7c5;
+  --text-muted: #74869a;
+
+  --accent-blue: #0798ff;
+  --success: #1fe07b;
+  --warning: #ffbf17;
+  --error: #ff5570;
+
+  --radius-small: 6px;
+  --radius-medium: 10px;
+  --radius-large: 14px;
+  --radius-panel: 12px;
+  --shadow-panel: 0 8px 24px rgba(0, 0, 0, 0.2);
+  --shadow-floating: 0 14px 40px rgba(0, 0, 0, 0.35);
+}
+
+/* ==========================================================================
+   1. NÚMEROS DE LINHA — um nó por linha
+   ========================================================================== */
+
+.line-numbers {
+  /* A régua é uma faixa que desliza; o conteúdo é que se move (translateY). */
+  overflow: visible;
+  white-space: normal;
+  contain: layout style;
+  will-change: transform;
+  pointer-events: none;
+}
+
+.line-numbers .ln {
+  display: block;                 /* <-- a correção: bloco, não texto corrido */
+  height: var(--line-height-code);
+  line-height: var(--line-height-code);
+  font: 12px/20px "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: #50677d;
+  /* Cada número ocupa a própria caixa: impossível emendar com o vizinho */
+  white-space: nowrap;
+  user-select: none;
+}
+
+.line-numbers .ln-active {
+  color: #cfe4f7;
+  font-weight: 700;
+  background: linear-gradient(90deg, transparent, rgba(7, 152, 255, 0.14));
+  border-radius: 3px;
+}
+
+.line-numbers .ln-error {
+  color: #ff8294;
+  font-weight: 700;
+  position: relative;
+}
+
+.line-numbers .ln-error::after {
+  content: "";
+  position: absolute;
+  right: 1px;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--error);
+  transform: translateY(-50%);
+}
+
+/* Realce: mesma métrica do textarea, uma linha por nó */
+.highlight {
+  contain: layout style;
+}
+
+.highlight .code-line {
+  display: block;                 /* bloco -> cada linha é uma caixa própria */
+  min-height: var(--line-height-code);
+  line-height: var(--line-height-code);
+  white-space: pre;
+}
+
+.highlight .code-line.warn-line {
+  background: linear-gradient(90deg, rgba(255, 191, 23, 0.12), transparent 75%);
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: var(--warning);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+}
+
+.highlight .code-line.active-line {
+  background: rgba(7, 152, 255, 0.07);
+}
+
+/* Régua lateral de diagnósticos + linhas somente-Python (Parte 14.4) */
+.diagnostic-ruler {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 7px;
+  z-index: 3;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.diagnostic-ruler .ruler-mark {
+  position: absolute;
+  right: 1px;
+  width: 4px;
+  height: 12px;
+  border-radius: 2px;
+  pointer-events: auto;
+  cursor: help;
+}
+
+.ruler-mark.ruler-error { background: var(--error); }
+.ruler-mark.ruler-warn { background: var(--warning); }
+
+/* marcador discreto: código válido sem representação em blocos */
+.ruler-mark.ruler-python {
+  background: rgba(170, 183, 197, 0.5);
+  height: 8px;
+  width: 3px;
+}
+
+.editor-status {
+  margin-left: auto;
+  font: 10px/1 "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* ==========================================================================
+   2. ROLAGEM SEM BARRA VISÍVEL — paleta, categorias e árvore
+   ========================================================================== */
+
+/*
+ * A barra some, mas a rolagem por roda do mouse continua funcionando.
+ * `scrollbar-gutter` evita salto de layout; `scrollbar-width:none` +
+ * `::-webkit-scrollbar{display:none}` cobre Firefox e Chromium.
+ */
+.smooth-scroll,
+.library-list,
+.categories,
+.file-tree {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  scroll-behavior: auto;
+  overscroll-behavior: contain;   /* não "vaza" a rolagem para o canvas */
+  scrollbar-gutter: stable;
+}
+
+.smooth-scroll::-webkit-scrollbar,
+.library-list::-webkit-scrollbar,
+.categories::-webkit-scrollbar,
+.file-tree::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/* As CATEGORIAS também rolavam com overflow:hidden — por isso as opções de
+   baixo ficavam invisíveis e inacessíveis. Agora rolam com a roda. */
+.categories {
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: 14px;
+}
+
+/* Fade nas bordas: indica "tem mais conteúdo" sem usar barra nem botão */
+.library-list,
+.categories,
+.file-tree {
+  position: relative;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
+.library.fade-top::before,
+.library.fade-bottom::after,
+.blocks-pane .categories.fade-top::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 18px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.library {
+  position: relative;
+}
+
+.library.fade-top::before {
+  top: 35px;
+  background: linear-gradient(180deg, #0b1b2b, transparent);
+}
+
+.library.fade-bottom::after {
+  bottom: 0;
+  background: linear-gradient(0deg, #0b1b2b, transparent);
+}
+
+.categories.fade-bottom {
+  -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 16px), transparent);
+  mask-image: linear-gradient(180deg, #000 calc(100% - 16px), transparent);
+}
+
+.categories.fade-top {
+  -webkit-mask-image: linear-gradient(0deg, #000 calc(100% - 16px), transparent);
+  mask-image: linear-gradient(0deg, #000 calc(100% - 16px), transparent);
+}
+
+.categories.fade-top.fade-bottom {
+  -webkit-mask-image:
+    linear-gradient(180deg, transparent, #000 16px, #000 calc(100% - 16px), transparent);
+  mask-image:
+    linear-gradient(180deg, transparent, #000 16px, #000 calc(100% - 16px), transparent);
+}
+
+/* Contagem de blocos por categoria */
+.categories button .cat-count {
+  margin-left: auto;
+  font-size: 9px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+  padding: 1px 5px;
+}
+
+.categories button.active .cat-count { color: #dff0ff; }
+
+/* ==========================================================================
+   Paleta de blocos — mesmos nomes do LEGO Education, NÃO editáveis aqui
+   ========================================================================== */
+
+.library-block {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 36px;
+  margin: 5px 0;
+  padding: 8px 10px 8px 20px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  border-radius: var(--radius-small);
+  color: #fff;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0) 55%), var(--color);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.18),
+    0 2px 5px rgba(0, 0, 0, 0.2);
+  text-align: left;
+  cursor: grab;
+  position: relative;
+  font-weight: 600;
+  font-size: 11.5px;
+  line-height: 1.3;
+  transition: transform 0.12s ease, filter 0.12s ease, box-shadow 0.12s ease;
+}
+
+.library-block:hover {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.18),
+    0 5px 13px rgba(0, 0, 0, 0.24);
+}
+
+.library-block:active { cursor: grabbing; }
+
+.library-block:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.92);
+  outline-offset: 2px;
+}
+
+.library-block.dragging {
+  opacity: 0.62;
+  transform: rotate(1deg) scale(1.015);
+  cursor: grabbing;
+}
+
+.lib-label { flex: 1 1 auto; min-width: 0; }
+
+.lib-args {
+  font-style: normal;
+  font-weight: 500;
+  opacity: 0.82;
+  font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 10px;
+}
+
+/* formatos geométricos na paleta (Parte 12.2) */
+.library-block.shape-hat {
+  border-radius: 20px 12px var(--radius-small) var(--radius-small);
+  padding-top: 11px;
+}
+
+.library-block.shape-reporter { border-radius: var(--reporter-radius); padding-left: 16px; }
+
+.library-block.shape-boolean {
+  clip-path: var(--boolean-clip);
+  border-radius: 0;
+  padding-left: 22px;
+  padding-right: 18px;
+}
+
+.library-block.shape-c-block::after {
+  content: "";
+  position: absolute;
+  left: 14px;
+  bottom: -6px;
+  width: calc(100% - 22px);
+  height: 7px;
+  border-radius: 0 0 var(--radius-small) var(--radius-small);
+  background: var(--color);
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.18);
+}
+
+.library-block.shape-cap::after { display: none; }
+
+.library-block.from-library { border-left: 3px solid rgba(255, 255, 255, 0.55); }
+
+.library-empty {
+  padding: 22px 12px;
+  color: var(--text-secondary);
+  text-align: center;
+  line-height: 1.55;
+}
+
+.library-empty svg { color: var(--text-muted); margin-bottom: 8px; }
+.library-empty code {
+  font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  background: rgba(255, 255, 255, 0.07);
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-size: 10.5px;
+}
+
+/* ==========================================================================
+   3. B09 — campos de bloco SEMPRE legíveis (contraste >= 4.5:1)
+   ========================================================================== */
+
+.program-block .gb-field {
+  background: #f8fbff !important;
+  color: #102438 !important;
+  -webkit-text-fill-color: #102438 !important;
+  caret-color: #102438;
+  font-weight: 750;
+  opacity: 1;
+}
+
+.program-block .gb-field::selection { background: #cde6ff; color: #04111f; }
+.program-block .gb-field::placeholder { color: #5c7489 !important; }
+
+.program-block .gb-field:hover {
+  border-color: rgba(0, 77, 130, 0.5);
+  background: #ffffff !important;
+}
+
+.program-block .gb-field:focus {
+  border-color: #078bff;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9), 0 0 0 4px rgba(7, 139, 255, 0.62);
+  outline: none;
+}
+
+/* 13.6 — valor fora da faixa: borda âmbar, NÃO apaga o que foi digitado */
+.program-block .gb-field.gb-out-of-range {
+  border-color: var(--warning) !important;
+  box-shadow: 0 0 0 2px rgba(255, 191, 23, 0.35);
+}
+
+/* texto onde se espera número: borda vermelha, conteúdo preservado */
+.program-block .gb-field.gb-invalid {
+  border-color: var(--error) !important;
+  box-shadow: 0 0 0 2px rgba(255, 85, 112, 0.32);
+}
+
+.gb-unit {
+  font-size: 10px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.86);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
+  white-space: nowrap;
+}
+
+.gb-value { display: inline-flex; align-items: center; gap: 4px; }
+
+.gb-slider {
+  width: 58px;
+  height: 4px;
+  accent-color: #ffffff;
+  cursor: pointer;
+}
+
+.gb-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  color: #fff;
+  font-weight: 650;
+}
+
+.gb-switch {
+  width: 26px;
+  height: 15px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.28);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+  position: relative;
+  transition: background 0.14s ease;
+  flex: 0 0 26px;
+}
+
+.gb-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.14s ease;
+}
+
+.gb-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+.gb-toggle input:checked + .gb-switch { background: rgba(255, 255, 255, 0.55); }
+.gb-toggle input:checked + .gb-switch::after { transform: translateX(11px); }
+.gb-toggle input:focus-visible + .gb-switch { box-shadow: 0 0 0 2px #fff, 0 0 0 4px rgba(7, 139, 255, 0.7); }
+
+/* Encaixe de bloco booleano (G02) */
+.gb-socket {
+  display: inline-flex;
+  align-items: center;
+  min-width: 96px;
+}
+
+.gb-socket-boolean {
+  clip-path: var(--boolean-clip);
+  background: rgba(0, 0, 0, 0.22);
+  padding: 2px 12px;
+}
+
+.gb-socket-boolean .gb-field {
+  background: transparent !important;
+  border-color: transparent !important;
+  color: #fff !important;
+  -webkit-text-fill-color: #fff !important;
+  font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  min-width: 72px;
+}
+
+/* Parâmetros avançados revelados ao expandir */
+.gb-advanced {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  flex-basis: 100%;
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.28);
+}
+
+.gb-advanced-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.gb-advanced-field > span {
+  text-transform: lowercase;
+  opacity: 0.85;
+}
+
+.gb-expand {
+  display: inline-grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.22);
+  color: #fff;
+  cursor: pointer;
+  flex: 0 0 19px;
+  transition: background 0.12s ease, transform 0.12s ease;
+}
+
+.gb-expand:hover { background: rgba(0, 0, 0, 0.36); transform: scale(1.08); }
+
+.gb-else-label {
+  margin-top: 4px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.94);
+}
+
+/* ==========================================================================
+   4. Estados dos blocos (Parte 12.6)
+   ========================================================================== */
+
+.program-block { cursor: grab; }
+.program-block:hover { filter: brightness(1.04); }
+
+.program-block.dragging {
+  opacity: 0.62;
+  transform: rotate(1deg) scale(1.015);
+  cursor: grabbing;
+  z-index: 20;
+}
+
+.program-block.selected {
+  z-index: 8;
+  outline: 2px solid rgba(255, 255, 255, 0.95);
+  outline-offset: 2px;
+}
+
+.program-block.disabled-block {
+  opacity: 0.43;
+  filter: grayscale(0.5);
+}
+
+/* bloco com erro: borda vermelha + ícone de alerta no canto */
+.program-block.has-error {
+  border-color: var(--error) !important;
+  box-shadow: 0 0 0 2px rgba(255, 85, 112, 0.4), 0 5px 13px rgba(0, 0, 0, 0.24);
+}
+
+.program-block.has-error::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--error);
+  box-shadow: 0 0 0 2px var(--bg-workspace);
+}
+
+/* correspondente ao cursor do editor: pulso suave na borda (12.6) */
+.program-block.cursor-match {
+  box-shadow: 0 0 0 2px rgba(7, 152, 255, 0.75), 0 5px 13px rgba(0, 0, 0, 0.24);
+}
+
+.program-block.pulse { animation: block-pulse 700ms ease-out; }
+
+@keyframes block-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(7, 152, 255, 0.85); }
+  100% { box-shadow: 0 0 0 16px rgba(7, 152, 255, 0); }
+}
+
+/* ==========================================================================
+   Canvas infinito (B10) — sem barra de rolagem
+   ========================================================================== */
+
+.workspace {
+  overflow: hidden;
+  position: relative;
+  cursor: default;
+  touch-action: none;
+}
+
+.workspace.panning { cursor: grabbing; }
+.workspace.drop-target { box-shadow: inset 0 0 0 2px rgba(7, 152, 255, 0.55); }
+
+.workspace:focus-visible {
+  outline: 2px solid rgba(7, 152, 255, 0.8);
+  outline-offset: -2px;
+}
+
+.workspace-world {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.block-stack.nested {
+  width: auto;
+  min-width: 190px;
+  padding: 3px 0 3px 4px;
+}
+
+.workspace-empty {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(400px, 84%);
+  padding: 22px 24px;
+  border: 1px dashed rgba(120, 160, 200, 0.35);
+  border-radius: var(--radius-panel);
+  background: rgba(9, 26, 42, 0.82);
+  color: var(--text-secondary);
+  text-align: center;
+  pointer-events: none;
+}
+
+.workspace-empty .empty-illustration { color: #3d6a94; margin-bottom: 6px; }
+.workspace-empty strong { display: block; color: var(--text-primary); font-size: 14px; margin-bottom: 4px; }
+.workspace-empty p { margin: 6px 0 8px; font-size: 11px; }
+
+.workspace-empty ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  text-align: left;
+  display: grid;
+  gap: 6px;
+  font-size: 11.5px;
+}
+
+.workspace-empty li { display: flex; align-items: center; gap: 7px; }
+.workspace-empty li svg { color: var(--success); flex: 0 0 13px; }
+.workspace-empty b { color: var(--text-primary); }
+
+/* ==========================================================================
+   Autocomplete (Parte 15.3)
+   ========================================================================== */
+
+.autocomplete {
+  max-height: 208px;
+  width: 288px;
+  padding: 4px;
+  background: #10263a;
+  border: 1px solid #31516c;
+  border-radius: var(--radius-medium);
+  box-shadow: var(--shadow-floating);
+  z-index: 30;
+}
+
+.autocomplete button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 27px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: #dce8f2;
+  text-align: left;
+  cursor: pointer;
+}
+
+.autocomplete button:hover,
+.autocomplete button.active { background: #075d96; }
+
+.ac-kind {
+  flex: 0 0 15px;
+  text-align: center;
+  font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  color: #8fc7f7;
+}
+
+.ac-class { color: #55baff; }
+.ac-method, .ac-function { color: #7fdcff; }
+.ac-constant { color: #ffb65f; }
+.ac-keyword { color: #ff72c5; }
+.ac-variable { color: #f730ab; }
+.ac-module { color: #1fe07b; }
+.ac-property { color: #00c2a8; }
+
+.ac-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 11.5px;
+}
+
+.autocomplete small {
+  float: none;
+  flex: 0 1 auto;
+  max-width: 44%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #7890a5;
+  font-size: 9.5px;
+}
+
+/* Tooltip de documentação / ajuda de assinatura */
+.editor-tooltip {
+  position: fixed;
+  z-index: 60;
+  max-width: 330px;
+  padding: 8px 10px;
+  border: 1px solid #31516c;
+  border-radius: var(--radius-medium);
+  background: #0d2135;
+  box-shadow: var(--shadow-floating);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+  pointer-events: none;
+}
+
+.editor-tooltip[hidden] { display: none; }
+.editor-tooltip strong { color: var(--text-primary); display: block; margin-bottom: 3px; }
+
+.editor-tooltip code {
+  display: block;
+  font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 10.5px;
+  color: #7fdcff;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  padding: 3px 6px;
+  margin-bottom: 4px;
+  word-break: break-word;
+}
+
+.editor-tooltip .ac-hint { margin-top: 4px; color: var(--text-muted); }
+.editor-tooltip .ac-hint b { color: var(--warning); }
+
+/* ==========================================================================
+   Terminal (Parte 17)
+   ========================================================================== */
+
+.terminal-head button[data-tab] { position: relative; }
+.terminal-head button[data-tab].active::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 0;
+  height: 2px;
+  background: var(--accent-blue);
+  border-radius: 2px 2px 0 0;
+}
+
+.terminal-line {
+  align-items: baseline;
+  gap: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 1px 0;
+}
+
+.terminal-message { flex: 1 1 auto; min-width: 0; }
+.terminal-line time { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+
+.terminal-line.warning { color: var(--warning); }
+
+.terminal-line.clickable { cursor: pointer; border-radius: 3px; }
+.terminal-line.clickable:hover { background: rgba(255, 255, 255, 0.07); }
+
+.terminal-empty { color: var(--text-muted); font-style: italic; }
+
+/* ==========================================================================
+   GitHub — avatares reais, perfil e ranking (Parte 19.5–19.7)
+   ========================================================================== */
+
+.profile-stack { display: flex; align-items: center; }
+
+.profile-avatar {
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  border: 2px solid var(--bg-toolbar);
+  background: var(--avatar-color, #3d7eff);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  overflow: hidden;
+  padding: 0;
+  margin-left: -7px;
+  transition: transform 0.14s ease, box-shadow 0.14s ease;
+  position: relative;
+}
+
+.profile-avatar:first-child { margin-left: 0; }
+.profile-avatar:hover { transform: translateY(-2px) scale(1.07); z-index: 3; }
+
+.profile-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* 19.5: conectado ao GitHub -> anel verde; sem avatar -> iniciais coloridas.
+   Nunca avatar genérico de estoque. */
+.profile-avatar.connected { box-shadow: 0 0 0 2px rgba(31, 224, 123, 0.75); }
+
+.profile-avatar.last-commit::after {
+  content: "";
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  border: 2px solid var(--bg-toolbar);
+}
+
+.team-more {
+  margin-left: 4px;
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  padding: 2px 6px;
+}
+
+.profile-avatar.big {
+  width: 52px;
+  height: 52px;
+  font-size: 16px;
+  margin: 0;
+  cursor: default;
+  flex: 0 0 52px;
+}
+
+.profile-summary {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.profile-summary dl {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 3px 12px;
+  margin: 0;
+  font-size: 11px;
+}
+
+.profile-summary dt { color: var(--text-muted); }
+
+.profile-summary dd {
+  margin: 0;
+  color: var(--text-primary);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.ranking { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
+
+.ranking li {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  grid-template-areas: "rank who" ". metrics";
+  gap: 2px 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.ranking .rank { grid-area: rank; color: var(--text-muted); font-weight: 800; }
+.ranking .who { grid-area: who; color: var(--text-primary); font-weight: 650; font-size: 11.5px; }
+.ranking .who em { font-style: normal; color: var(--text-muted); font-weight: 500; font-size: 10px; }
+.ranking .metrics { grid-area: metrics; color: var(--text-secondary); font-size: 10px; font-variant-numeric: tabular-nums; }
+
+.ranking .unavailable,
+.profile-summary .unavailable {
+  color: var(--warning);
+  font-size: 11px;
+  line-height: 1.5;
+  border: 0;
+  background: none;
+  padding: 0;
+}
+
+.metric-note {
+  font-size: 9.5px;
+  color: var(--text-muted);
+  line-height: 1.45;
+  margin: 4px 0 10px;
+}
+
+/* ==========================================================================
+   Explorador de arquivos (Parte 8 / B22)
+   ========================================================================== */
+
+.tree-row .tree-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.tree-row .badge-entry {
+  color: var(--success);
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.tree-row.revealed {
+  animation: reveal-row 1.2s ease-out;
+}
+
+@keyframes reveal-row {
+  0%, 60% { background: rgba(7, 152, 255, 0.32); }
+  100% { background: transparent; }
+}
+
+.tree-row.drop-hint,
+.file-tree.drop-hint { outline: 1px dashed var(--accent-blue); outline-offset: -2px; }
+
+.folder-row .twisty { transition: transform 120ms ease; }
+.folder-row.collapsed .twisty { transform: rotate(0deg); }
+.folder-row.expanded .twisty { transform: rotate(90deg); }
+
+/* ==========================================================================
+   Estado de sincronização (Parte 14.2)
+   ========================================================================== */
+
+.sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.sync i { display: inline-grid; place-items: center; }
+.sync svg { width: 12px; height: 12px; }
+
+.sync.synced { color: var(--success); }
+.sync.updating { color: var(--accent-blue); }
+.sync.updating i svg { animation: spin 1s linear infinite; }
+.sync.partial { color: var(--warning); }
+.sync.error { color: var(--error); }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ==========================================================================
+   Abas de saída
+   ========================================================================== */
+
+.output-tabs { scrollbar-width: none; }
+
+.output .tab-dirty {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning);
+  display: inline-block;
+  margin-left: 5px;
+  vertical-align: middle;
+}
+
+/* ==========================================================================
+   Menus de contexto (Parte 22.2)
+   ========================================================================== */
+
+.context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: #dce8f2;
+  text-align: left;
+  cursor: pointer;
+  font-size: 11.5px;
+}
+
+.context-menu button:hover:not([disabled]) { background: #075d96; }
+.context-menu button[disabled] { opacity: 0.45; cursor: not-allowed; }
+.context-menu button.danger { color: #ff9aab; }
+.context-menu button.danger:hover { background: rgba(255, 85, 112, 0.24); }
+.context-menu button svg { flex: 0 0 14px; color: currentColor; }
+.context-menu .menu-gap { flex: 0 0 14px; }
+.context-menu button span { flex: 1 1 auto; }
+
+.context-menu kbd {
+  flex: 0 0 auto;
+  font: 9.5px/1 "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 3px;
+  padding: 2px 4px;
+}
+
+.context-menu hr {
+  border: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  margin: 4px 6px;
+}
+
+/* ==========================================================================
+   Avisos de estado
+   ========================================================================== */
+
+/* Aplicativo de DESKTOP: sem layout de telefone (pedido do usuário) */
+.desktop-notice {
+  position: fixed;
+  inset: auto 0 0 0;
+  z-index: 90;
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px 18px;
+  background: rgba(7, 21, 34, 0.97);
+  border-top: 1px solid var(--border);
+  box-shadow: var(--shadow-floating);
+  color: var(--text-secondary);
+}
+
+.desktop-notice svg { color: var(--accent-blue); flex: 0 0 22px; }
+.desktop-notice strong { display: block; color: var(--text-primary); font-size: 13px; margin-bottom: 3px; }
+.desktop-notice p { margin: 0; font-size: 11.5px; line-height: 1.5; max-width: 62ch; }
+
+.boot-error {
+  margin: 0;
+  padding: 14px 18px;
+  background: #2a0d14;
+  border-bottom: 2px solid var(--error);
+  color: #ffd7de;
+  font-size: 12px;
+}
+
+.boot-error strong { display: block; margin-bottom: 4px; }
+.boot-error pre {
+  margin: 6px 0 0;
+  font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 10.5px;
+  color: #ff9aab;
+  white-space: pre-wrap;
+}
+
+.toast.show { animation: toast-in 180ms ease-out; }
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.toast.success { border-left-color: var(--success); }
+.toast.warning { border-left-color: var(--warning); }
+.toast.error { border-left-color: var(--error); }
+
+/* ==========================================================================
+   Acessibilidade (Parte 24) e movimento reduzido (Parte 23.3)
+   ========================================================================== */
+
+button:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+.tree-row:focus-visible,
+.library-block:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Fallback para navegadores sem color-mix (Parte 12.5) */
+@supports not (color: color-mix(in srgb, red, blue)) {
+  .program-block { border-color: rgba(0, 0, 0, 0.32); }
+}

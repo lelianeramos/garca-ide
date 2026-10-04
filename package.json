@@ -1,16 +1,28 @@
 {
   "name": "garca-de-botas-code-studio",
   "version": "1.0.0",
+  "description": "IDE web de robótica FLL: blocos LEGO Education pt-BR + Python Pybricks com sincronização bidirecional, SPIKE Prime via Bluetooth.",
   "private": true,
   "type": "module",
-  "scripts": {
-    "dev": "node server.mjs",
-    "start": "node server.mjs",
-    "test:blocks": "node tests/block_engine.test.cjs",
-    "test": "npm run test:blocks && python3 -m unittest discover -s tests -v"
+
+  "//engines": "Versão major FIXA. Um range solto (>=20.0.0) faz a Vercel avisar que vai subir sozinho a cada nova major. Node 20 entrou em EOL e novos builds com ele falham desde 2026-10-01 — por isso 22.x, não 20.x.",
+  "engines": {
+    "node": "22.x"
   },
+
+  "//scripts": "Sem 'start' e sem 'build' de propósito: a presença desses scripts faz a Vercel inferir um servidor Node.js e falhar com 'No entrypoint found'. O projeto é estático + api/**. Em dev use 'npm run dev'.",
+  "scripts": {
+    "dev": "node tools/dev-server.mjs",
+    "test": "npm run test:blocks && npm run test:api && npm run test:py",
+    "test:blocks": "node tests/block_engine.test.cjs",
+    "test:api": "node tests/github_commit.test.mjs && node tests/repository_path.test.mjs",
+    "test:py": "python3 -m unittest discover -s tests -v",
+    "test:semantic": "python3 -m unittest tests.test_semantic -v",
+    "fetch:wasm": "npm install @pybricks/mpy-cross-v6 --no-save && cp node_modules/@pybricks/mpy-cross-v6/build/mpy-cross-v6.wasm vendor/mpy-cross-v6.wasm && cp node_modules/@pybricks/mpy-cross-v6/build/mpy-cross-v6.js vendor/mpy-cross-v6.js",
+    "vercel:doctor": "node tools/check-deploy.mjs"
+  },
+
   "devDependencies": {
-    "@pybricks/mpy-cross-v6": "^2.0.0",
-    "esbuild": "^0.25.10"
+    "@pybricks/mpy-cross-v6": "^2.0.0"
   }
 }
