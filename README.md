@@ -93,7 +93,7 @@ com código 1 se algum item crítico falhar.
 | Campo | Valor |
 |---|---|
 | Framework Preset | **Other** |
-| Root Directory | a pasta do projeto (ex.: `garca-studio`) |
+| Root Directory | **vazio** (raiz do repositório) |
 | Build Command | **vazio** |
 | Output Directory | **vazio** |
 | Install Command | **vazio** |
@@ -102,6 +102,20 @@ com código 1 se algum item crítico falhar.
 O `vercel.json` já declara `framework`, `buildCommand`, `outputDirectory` e
 `installCommand`, e esses campos **sobrescrevem o dashboard**. Ainda assim,
 confira se o painel bate com a tabela.
+
+#### Por que Root Directory vazio
+
+Todos os arquivos deste projeto estão na **raiz do repositório** — `index.html`,
+`studio-ui.js`, `src/`, `api/`, `vendor/`, `vercel.json`. Não existe nenhuma
+subpasta de aplicativo.
+
+Se o Root Directory apontar para uma pasta que não existe (por exemplo
+`garca-studio`), acontecem duas coisas ruins: o build procura os arquivos no
+lugar errado, e o `vercel.json` da raiz **não é lido** — porque a Vercel passa a
+procurar `garca-studio/vercel.json`. Sem ler o `vercel.json`, o
+`"framework": null` é ignorado e o erro `No entrypoint found` volta.
+
+Para conferir: **Settings → General → Root Directory**. Deixe em branco.
 
 #### Por que `framework: null`
 
