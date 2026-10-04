@@ -51,7 +51,7 @@ real de cada integrante e as métricas de contribuição.
 ## Rodando localmente
 
 ```bash
-npm install          # opcional: só para re-baixar o compilador wasm
+npm install          # opcional: só para "npm run fetch:wasm" re-baixar o compilador
 python3 --version    # precisa de Python 3.10+ no PATH
 npm run dev          # http://localhost:4173
 ```
@@ -76,11 +76,13 @@ npm test              # tudo
 npm run test:blocks   # motor visual de blocos
 npm run test:api      # segurança do commit + caminhos do repositório
 npm run test:py       # parser semântico e normalização
-npm run vercel:doctor # checagem pré-deploy (28 itens)
+npm run vercel:doctor # checagem pré-deploy (38 itens)
 ```
 
 Rode `npm run vercel:doctor` **antes** de publicar. Ele confere os pontos que
-já quebraram o deploy uma vez e termina com código 1 se algo crítico falhar.
+já quebraram o deploy — o `document is not defined`, o `No entrypoint found`, o
+warning do `engines`, o caminho de commit, o wasm, segredos vazados — e termina
+com código 1 se algum item crítico falhar.
 
 ---
 
@@ -94,12 +96,54 @@ já quebraram o deploy uma vez e termina com código 1 se algo crítico falhar.
 | Root Directory | a pasta do projeto (ex.: `garca-studio`) |
 | Build Command | **vazio** |
 | Output Directory | **vazio** |
-| Install Command | `npm install` |
-| Node.js Version | 20.x ou superior |
+| Install Command | **vazio** |
+| Node.js Version | **22.x** |
 
-Build Command e Output Directory vazios são importantes: este projeto é estático
-+ `api/**`. Se a Vercel tentar "buildar", ela pode empacotar um arquivo de
-frontend como função serverless.
+O `vercel.json` já declara `framework`, `buildCommand`, `outputDirectory` e
+`installCommand`, e esses campos **sobrescrevem o dashboard**. Ainda assim,
+confira se o painel bate com a tabela.
+
+#### Por que `framework: null`
+
+A Vercel infere um servidor Node.js quando encontra um `package.json` na raiz
+sem um framework reconhecido, e passa a exigir um entrypoint. O build então
+quebrava com:
+
+```
+Error: No entrypoint found in "/vercel/path0". Set package.json "main" to a
+server file, or add one of: app.js, app.cjs, index.js, server.js, main.js…
+```
+
+Este projeto é **estático + `api/**`** — não existe servidor Node na raiz.
+`"framework": null` no `vercel.json` sobrescreve o Framework Preset do painel e
+faz o deploy ser tratado como site estático, sem detecção de entrypoint.
+
+Pelo mesmo motivo o `package.json` **não tem** `main`, nem `scripts.start`, nem
+`scripts.build`. Qualquer um deles reativa a inferência de servidor. Em
+desenvolvimento use `npm run dev`.
+
+#### Por que Node 22.x e não 20.x
+
+Node 20 entrou em fim de vida e **novos builds na Vercel com ele falham desde
+1º de outubro de 2026**. Use `22.x`.
+
+O valor é uma major **fixa** de propósito. Um range solto (`>=20.0.0`, `^22`)
+faz a Vercel avisar que a versão vai subir sozinha a cada nova major:
+
+```
+Warning: Detected "engines": { "node": ">=20.0.0" } in your package.json that
+will automatically upgrade when a new major Node.js Version is released.
+```
+
+#### Por que Install Command vazio
+
+Nada em produção depende de `node_modules`: o compilador
+`vendor/mpy-cross-v6.wasm` já está versionado, as funções Python rodam no
+runtime Python da Vercel e as funções JS usam apenas `fetch`, nativo do Node.
+Pular a instalação torna o build mais rápido e elimina uma forma de falhar.
+
+`npm install` localmente só é necessário para `npm run fetch:wasm`, que
+re-baixa o compilador.
 
 ### 2. Variáveis de ambiente
 

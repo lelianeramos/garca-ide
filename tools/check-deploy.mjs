@@ -167,6 +167,56 @@ async function main() {
   }
 
   /* ---------------------------------------------------------------- */
+  /* Deploy Vercel — "No entrypoint found" e o warning do engines      */
+  /*                                                                    */
+  /* A Vercel infere um servidor Node.js a partir do package.json da    */
+  /* raiz quando não há framework reconhecido, e então exige um         */
+  /* entrypoint (app.js/index.js/server.js/main.js). Como este projeto  */
+  /* é estático + api/**, o build falhava com:                          */
+  /*   Error: No entrypoint found in "/vercel/path0"                    */
+  /* A correção é "framework": null no vercel.json, que sobrescreve o   */
+  /* preset do dashboard, + nenhum script que sugira servidor.          */
+  /* ---------------------------------------------------------------- */
+  let vercelJson = null;
+  let packageJson = null;
+  try { vercelJson = JSON.parse(vercel ?? ""); } catch { /* reportado abaixo */ }
+  try { packageJson = JSON.parse((await ler("package.json")) ?? ""); } catch { /* idem */ }
+
+  registrar("Vercel", "vercel.json é JSON válido", vercelJson !== null);
+  registrar("Vercel", 'vercel.json tem "framework": null (força deploy estático)',
+    vercelJson?.framework === null,
+    "sem isso a Vercel infere servidor Node e falha com 'No entrypoint found'");
+  registrar("Vercel", 'buildCommand vazio', vercelJson?.buildCommand === "",
+    `valor atual: ${JSON.stringify(vercelJson?.buildCommand)}`);
+  registrar("Vercel", 'outputDirectory vazio', vercelJson?.outputDirectory === "",
+    `valor atual: ${JSON.stringify(vercelJson?.outputDirectory)}`);
+
+  registrar("Vercel", "package.json é JSON válido", packageJson !== null);
+  registrar("Vercel", 'package.json não tem "main"',
+    !("main" in (packageJson ?? {})),
+    '"main" faz a Vercel procurar um servidor Node na raiz');
+
+  const scripts = packageJson?.scripts ?? {};
+  registrar("Vercel", 'sem script "start" (sinaliza servidor Node)',
+    !("start" in scripts),
+    `start = ${JSON.stringify(scripts.start)}`);
+  registrar("Vercel", 'sem script "build" que sugira compilação Node',
+    !("build" in scripts),
+    `build = ${JSON.stringify(scripts.build)}`);
+
+  // engines.node: range solto gera o warning "will automatically upgrade"
+  const nodeRange = packageJson?.engines?.node ?? "";
+  registrar("Vercel", "engines.node é versão major fixa (sem >= ^ ~)",
+    /^\d+\.x$/.test(nodeRange),
+    `valor atual: ${JSON.stringify(nodeRange)} — use "22.x"`, false);
+
+  // Node 20 entrou em EOL: novos builds na Vercel falham desde 2026-10-01
+  const major = Number(/^(\d+)/.exec(nodeRange)?.[1] ?? 0);
+  registrar("Vercel", "engines.node não é Node 20 ou anterior (EOL na Vercel)",
+    major >= 22,
+    `major detectada: ${major || "?"}. Node 20 falha em builds novos desde 2026-10-01`);
+
+  /* ---------------------------------------------------------------- */
   /* Saída                                                             */
   /* ---------------------------------------------------------------- */
   let grupoAtual = "";

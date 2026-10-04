@@ -1,10 +1,18 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+
+  "framework": null,
+  "buildCommand": "",
+  "outputDirectory": "",
+  "installCommand": "",
+
   "cleanUrls": true,
   "trailingSlash": false,
+
   "github": {
     "silent": true
   },
+
   "functions": {
     "api/project/format.py": {
       "includeFiles": "pybricks-api.json"
@@ -13,6 +21,7 @@
       "maxDuration": 30
     }
   },
+
   "headers": [
     {
       "source": "/(.*)",
@@ -36,6 +45,7 @@
       ]
     }
   ],
+
   "rewrites": [
     { "source": "/api/project/semantic", "destination": "/api/project/semantic.py" },
     { "source": "/api/project/format", "destination": "/api/project/format.py" },
