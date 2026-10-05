@@ -3,12 +3,14 @@ from pybricks.robotics import DriveBase
 from pybricks.parameters import Port
 from pybricks.tools import StopWatch
 import movimentos
-def main():
+   def main():
     # inicia o cronômetro quando o progrma é iniciado
-    timer = StopWatch()
+     timer = StopWatch()
+
+    motor_a.control.pid(kp=45, ki=0, kd=0)
     #Drive base com os dois motores de tração
     robot = DriveBase(motor_a, motor_b, 62.4, 148)
-    
+
     robot.settings(straight_speed=300)
     motor_a.settings(acceleration=400, deceleration=400)
     motor_b.settings(acceleration=400, deceleration=400)
