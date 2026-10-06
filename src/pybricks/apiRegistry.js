@@ -23,6 +23,17 @@
 export const PORTS = ["A", "B", "C", "D", "E", "F"];
 
 export const ENUMS = {
+  /*
+   * `Port` estava AUSENTE desta lista, e `enumValue(node, "Port")` conferia
+   * `ENUMS["Port"]?.includes(...)` — ou seja, sempre `undefined`, sempre
+   * `null`. Resultado: TODO motor colado no arquivo caía no `"A"` de
+   * reserva, e `esq = Motor(Port.B)` virava "motor na porta A". Somado ao
+   * nome fixo no `py()`, dava a duplicata exata que a criança relatava.
+   *
+   * A lista tem que conter as portas reais do SPIKE Prime, porque é contra
+   * elas que o arquivo é conferido.
+   */
+  Port: ["A", "B", "C", "D", "E", "F"],
   Direction: ["CLOCKWISE", "COUNTERCLOCKWISE"],
   Stop: ["COAST", "BRAKE", "HOLD", "NONE"],
   Color: [
@@ -105,12 +116,107 @@ export const CATEGORIES = [
   { id: "sensors",    name: "Sensores",     color: "#15C3DF", icon: "sensor" },
   { id: "operators",  name: "Operadores",   color: "#0ACB72", icon: "operators" },
   { id: "variables",  name: "Variáveis",    color: "#F730AB", icon: "variables" },
+  { id: "lists",      name: "Listas",       color: "#8E7CFF", icon: "list" },
   { id: "myblocks",   name: "Meus blocos",  color: "#FF506B", icon: "myblocks" },
   { id: "hub",        name: "HUB",          color: "#3D7EFF", icon: "hub" },
-  { id: "libraries",  name: "Bibliotecas",  color: "#00C2A8", icon: "module" },
+  /*
+    AVANÇADO — último da lista, de propósito.
+
+    São os blocos genéricos (chamar função, operador, atributo,
+    subscrito, condicional). Eles existem para que virtually nenhum
+    código fique "somente Python", mas NÃO devem ser a primeira coisa
+    que a criança vê: a decisão de produto foi escondê-los numa categoria
+    recolhida no fim, e mostrá-los automaticamente quando o programa real
+    precisar.
+  */
+  { id: "advanced",   name: "Avançado",     color: "#7C8FA5", icon: "advanced" },
+];
+
+/**
+ * Categorias que são geradas a partir do PROJETO (funções Python do time).
+ *
+ * Decisão de produto (pedido explícito do usuário): NÃO existem botões fixos
+ * tipo "Gyro Move". Se a equipe escreve `def gyro_move(...)` em
+ * `movimento.py`, a função vira bloco sozinha. Python já resolve o resto:
+ * `from movimento import gyro_move` é import normal.
+ *
+ * "Bibliotecas" = funções de OUTROS arquivos do projeto (módulos da equipe).
+ * "Meus blocos" = funções do arquivo que está aberto + blocos personalizados.
+ */
+export const PROJECT_CATEGORIES = [
+  { id: "libraries", name: "Funções do projeto", color: "#00C2A8", icon: "module" },
 ];
 
 export const CATEGORY_COLOR = Object.fromEntries(CATEGORIES.map((c) => [c.id, c.color]));
+
+/* ------------------------------------------------------------------ */
+/* Nomes de função em português (SÓ A INTERFACE)                       */
+/* ------------------------------------------------------------------ */
+/**
+ * Tradução de NENHUMA regra interna: o Python continua usando o nome técnico
+ * real. `gyro_turn(90)` vira "Girar com giroscópio" na tela e continua
+ * `gyro_turn(90)` no editor.
+ *
+ *   Visual : Girar com giroscópio 90°
+ *   Python : gyro_turn(90)
+ */
+export const PT_FUNCTIONS = {
+  gyro_move: "Mover com giroscópio",
+  gyro_turn: "Girar com giroscópio",
+  gyro_curve: "Fazer curva com giroscópio",
+  smooth_step: "Mover suave",
+  smooth_turn: "Girar suave",
+  wait: "Esperar",
+  run_motor: "Mover motor",
+  stop_motor: "Parar motor",
+  line_follow: "Seguir linha",
+  drive_distance: "Andar uma distância",
+  turn_angle: "Girar um ângulo",
+  grab: "Pegar objeto",
+  release: "Soltar objeto",
+  attach: "Engatar anexo",
+  detach: "Destravar anexo",
+  calibrate: "Calibrar",
+  reset_gyro: "Zerar giroscópio",
+  color_at: "Ler cor",
+  distance_at: "Ler distância",
+  clamp: "Limitar valor",
+  wrap_angle: "Ajustar ângulo",
+};
+
+/** Palavras comuns de robotic translate_ndas para o rótulo visual. */
+const PT_WORDS = {
+  move: "Mover", turn: "Girar", curve: "Curva", straight: "Reto", gyro: "giroscópio",
+  gyroscope: "giroscópio", distance: "distância", speed: "velocidade", angle: "ângulo",
+  wheel: "roda", wheels: "rodas", motor: "motor", motors: "motores", line: "linha",
+  follow: "seguir", wait: "Esperar", color: "cor", sensor: "sensor", grab: "pegar",
+  release: "soltar", attach: "engatar", detach: "destravar", calibration: "calibração",
+  calibrate: "calibrar", smooth: "suave", step: "passo", setup: "configurar",
+  init: "iniciar", reset: "zerar", stop: "parar", start: "iniciar", run: "executar",
+  drive: "andar", base: "base", drivebase: "base", arm: "braço", gripper: "garra",
+  lift: "elevador", lift_arm: "elevador", follow_line: "seguir linha", ball: "bola",
+  track: "trilho", color_sensor: "sensor de cor", distance_sensor: "sensor de distância",
+};
+
+/**
+ * Rótulo visual em pt-BR de uma função Python.
+ * Conhecidas usam o dicionário; desconhecidas viram "Palavra Palavra"
+ * mantendo o nome real em tooltips e no código.
+ */
+export function ptFunctionLabel(name) {
+  const raw = String(name ?? "").trim();
+  if (!raw) return "";
+  if (PT_FUNCTIONS[raw]) return PT_FUNCTIONS[raw];
+  const words = raw.replace(/[_\-.]+/g, " ").trim().split(/\s+/).filter(Boolean);
+  if (words.length === 1 && /^[A-Z]/.test(raw)) return raw; // classe: mantém o nome técnico
+  const translated = words.map((word, index) => {
+    if (PT_FUNCTIONS[word]) return PT_FUNCTIONS[word];
+    if (PT_WORDS[word]) return PT_WORDS[word];
+    if (index === 0) return word.charAt(0).toUpperCase() + word.slice(1);
+    return word;
+  });
+  return translated.join(" ");
+}
 
 /* ------------------------------------------------------------------ */
 /* PYBRICKS_API — o array completo                                     */

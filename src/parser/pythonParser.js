@@ -138,7 +138,6 @@ const BINARY_LEVELS = [
   { ops: ["<<", ">>"], kind: "binaryOperation" },
   { ops: ["+", "-"], kind: "binaryOperation" },
   { ops: ["*", "/", "//", "%", "@"], kind: "binaryOperation" },
-  { ops: ["**"], kind: "binaryOperation", rightAssoc: true },
 ];
 
 class ExpressionParser {
@@ -167,8 +166,63 @@ class ExpressionParser {
 
   parseExpression() { return this.parseLevel(0); }
 
+  /**
+   * Item de `with`: `EXPR` ou `EXPR as NOME`.
+   *
+   * O `as` precisa ser tratado aqui porque a expressão sozinha não para
+   * nele — `as` é palavra-chave, e o parser de expressões não sabe que,
+   * depois dele, vem o nome do contexto.
+   */
+  parseWithItem() {
+    const context = this.parseLevel(0);
+    if (!this.at("as")) return context;
+    this.next();
+    const alias = this.parseLevel(0);
+    return { type: "withItem", context, alias, source: context?.source };
+  }
+
+  /*
+    TERNÁRIO — `A if COND else B`
+
+    Bug de CORREÇÃO, não de estilo. O parser ignorava o que vinha depois do
+    valor: `direcao = 1 if distancia >= 0 else -1` virava um `literal 1` e
+    jogava fora a condição e o `-1`. O bloco mostrava `direcao = 1`, o
+    Python regerado também, e o robô ia para o lado errado sem nenhum
+    aviso. Perda de semântica silenciosa é o pior defeito possível numa
+    IDE de bloqueio ↔ texto, porque nada denuncia.
+
+    O ternário é resolvido no FIM do nível mais fraco de precedência (o do
+    `or`), e não num nível à parte: é o que faz `a or b if c else d`
+    associar como `(a or b) if c else d`, que é como o Python real lê.
+  */
+  parseTernaryFrom(value) {
+    if (!this.at("if")) return value;
+
+    this.next(); // consome "if"
+    const test = this.parseLevel(0);
+    let alternate = null;
+
+    if (this.at("else")) {
+      this.next(); // consome "else"
+      // recursivo: `a if b else c if d else e` é `a if b else (c if d else e)`
+      alternate = this.parseTernaryFrom(this.parseLevel(0));
+    }
+
+    return {
+      type: "conditionalExpression",
+      test, consequent: value, alternate,
+      source: {
+        startLine: value.source?.startLine ?? this.line,
+        startColumn: value.source?.startColumn ?? 0,
+        endLine: this.line,
+        endColumn: this.previousToken()?.end ?? 0,
+      },
+    };
+  }
+
   parseLevel(level) {
-    if (level >= BINARY_LEVELS.length) return this.parseUnary();
+    // Último nível: entra a `factor` do Python, que resolve sinal e `**`.
+    if (level >= BINARY_LEVELS.length) return this.parseFactor();
     const spec = BINARY_LEVELS[level];
 
     if (spec.unary) {
@@ -198,15 +252,39 @@ class ExpressionParser {
         source: { ...left.source, endLine: right.source?.endLine ?? this.line, endColumn: right.source?.endColumn ?? 0 },
       };
     }
+
+    // O ternário tem a menor precedência de todas: só depois do `or`.
+    if (level === 0) left = this.parseTernaryFrom(left);
+
     return left;
   }
 
   previousToken() { return this.tokens[this.pos - 1] ?? null; }
 
-  parseUnary() {
+  /*
+   * `factor` DA GRAMÁTICA DO PYTHON
+   *
+   *     factor := ("+" | "-" | "~") factor | power
+   *     power  := primary ["**" factor]
+   *
+   * O sinal unário é mais FORA que a potência, então
+   *
+   *     -a ** 2   é   -(a ** 2)      ->  -4 quando a = 2
+   *     (-a) ** 2 é   ((-a) ** 2)    ->   4 quando a = 2
+   *
+   * São o MESMO símbolo com resultado OPOSTO. O parser antigo tratava
+   * `-a ** 2` como `(-a) ** 2`, e o round-trip devolvia o resultado errado
+   * da conta que a criança escreveu — e `(-a) ** 2` voltava como
+   * `-a ** 2`. Erro silencioso em aritmética é o pior que existe numa
+   * IDE que promete devolver o mesmo programa.
+   *
+   * Por isso `power` só aceita pós-fixos à ESQUERDA: se pedisse sinal, o
+   * `-` de `-a` seria engolido antes de o `**` aparecer.
+   */
+  parseFactor() {
     if (this.atAny(["-", "+", "~"])) {
       const op = this.next();
-      const operand = this.parseUnary();
+      const operand = this.parseFactor();
       // -5 vira literal negativo (fica legível no bloco)
       if (op.value === "-" && operand.type === "literal" && typeof operand.value === "number") {
         return { ...operand, value: -operand.value, source: this.span(op, this.previousToken()) };
@@ -216,7 +294,29 @@ class ExpressionParser {
         source: this.span(op, this.previousToken()),
       };
     }
-    return this.parsePostfix();
+    return this.parsePower();
+  }
+
+  /** `power`: pós-fixos e, opcionalmente, `**` com `factor` à direita. */
+  parsePower() {
+    const base = this.parsePostfix();
+    if (!this.at("**")) return base;
+
+    this.next(); // consome "**"
+    /*
+     * À direita entra `factor`, e não só `power`: é o que faz `2 ** -1`
+     * funcionar e `2 ** 3 ** 2` associar à direita, como o Python real.
+     */
+    const expoente = this.parseFactor();
+    return {
+      type: "binaryOperation", operator: "**", left: base, right: expoente,
+      source: {
+        startLine: base.source?.startLine ?? this.line,
+        startColumn: base.source?.startColumn ?? 0,
+        endLine: expoente.source?.endLine ?? this.line,
+        endColumn: expoente.source?.endColumn ?? 0,
+      },
+    };
   }
 
   parsePostfix() {
@@ -317,14 +417,23 @@ class ExpressionParser {
     if (token.value === "(") {
       this.next();
       const items = [this.parseExpression()];
+      let virgulaFinal = false;
       while (this.eat(",")) {
-        if (this.at(")")) break;
+        // vírgula seguida de `)` é tupla de UM elemento: `(1,)`
+        if (this.at(")")) { virgulaFinal = true; break; }
         items.push(this.parseExpression());
       }
       this.eat(")");
-      return items.length === 1
-        ? items[0]
-        : { type: "tuple", items, source: { startLine: this.line, startColumn: token.start, endLine: this.line, endColumn: this.previousToken()?.end ?? 0 } };
+      /*
+       * `(x)` é só o valor entre parênteses; `(x,)` é uma TUPLA de um
+       * elemento. Tratar os dois como o mesmo fez `(1,)` virar `1` no
+       * round-trip — e `(1,)` passado para `gb_move` deixa de ser uma
+       * tupla para virar um inteiro. A diferença é um caractere no arquivo.
+       */
+      const ehTupla = items.length > 1 || virgulaFinal;
+      return ehTupla
+        ? { type: "tuple", items, single: items.length === 1, source: { startLine: this.line, startColumn: token.start, endLine: this.line, endColumn: this.previousToken()?.end ?? 0 } }
+        : items[0];
     }
     if (token.value === "[") {
       this.next();
@@ -364,6 +473,57 @@ class ExpressionParser {
     this.next();
     return { type: "pythonExpression", text: token.value, source: this.span(token, token) };
   }
+
+  /**
+   * A expressão ficou sem OPERANDO?
+   *
+   * `x = 1 +` e `x = = 1` eram aceitos em silêncio: o parser devolvia uma
+   * árvore meio vazia, o bloco aparecia, e o indicador dizia "sincronizado".
+   * A criança achava que o programa estava pronto e o `SyntaxError` só
+   * apareceria no robô.
+   *
+   * A checagem é na ÁRVORE, não no texto: é a informação que já existe.
+   */
+  static incompleta(node) {
+    if (!node) return true;
+    switch (node.type) {
+      case "binaryOperation":
+        return ExpressionParser.incompleta(node.left) || ExpressionParser.incompleta(node.right);
+      case "unaryOperation":
+        // O campo é `operand` (é o nome que o construtor usa), não
+        // `argument`: com o nome errado, `x = not y` era dado como linha
+        // pela metade e a criança perdia um programa válido.
+        return ExpressionParser.incompleta(node.operand);
+      case "compare":
+        return ExpressionParser.incompleta(node.left) || ExpressionParser.incompleta(node.right);
+      case "booleanOperation":
+        return ExpressionParser.incompleta(node.left) || ExpressionParser.incompleta(node.right);
+      case "callExpression":
+        return ExpressionParser.incompleta(node.callee)
+          || (node.arguments ?? []).some(ExpressionParser.incompleta);
+      case "attribute":
+        return ExpressionParser.incompleta(node.object);
+      case "subscript":
+        return ExpressionParser.incompleta(node.object);
+      case "ternary":
+        return ExpressionParser.incompleta(node.condition)
+          || ExpressionParser.incompleta(node.consequent)
+          || ExpressionParser.incompleta(node.alternative);
+      case "literal":
+        return node.value === undefined || node.value === null;
+      case "variableReference":
+        return !node.name;
+      case "tuple":
+      case "list":
+        return (node.elements ?? []).some(ExpressionParser.incompleta);
+      // `pythonExpression` cobre qualquer token que o parser não reconhece —
+      // inclusive um `=` que sobrou. Todos são sinal de linha pela metade.
+      case "pythonExpression":
+        return true;
+      default:
+        return false;
+    }
+  }
 }
 
 /** Reconstrói o texto pontuado de um callee: hub.imu.heading -> "hub.imu.heading" */
@@ -402,10 +562,19 @@ export function unparse(node) {
     case "unaryOperation":
       return node.operator === "not" ? `(not ${unparse(node.operand)})` : `(${node.operator}${unparse(node.operand)})`;
     case "list": return `[${node.items.map(unparse).join(", ")}]`;
-    case "tuple": return `(${node.items.map(unparse).join(", ")})`;
+    case "tuple": {
+      const dentro = node.items.map(unparse).join(", ");
+      return `(${dentro}${node.single ? "," : ""})`;
+    }
     case "dict": return `{${node.entries.map((e) => `${unparse(e.key)}: ${unparse(e.value)}`).join(", ")}}`;
     case "set": return `{${node.entries.map((e) => unparse(e.key)).join(", ")}}`;
     case "lambda": return `lambda ${node.params.join(", ")}: ${unparse(node.body)}`;
+    case "conditionalExpression":
+      // `A if COND else B` — o `else` ausente é um Python inválido, mas
+      // devolvemos algo legível em vez de string vazia silenciosa.
+      return node.alternate
+        ? `(${unparse(node.consequent)} if ${unparse(node.test)} else ${unparse(node.alternate)})`
+        : `(${unparse(node.consequent)} if ${unparse(node.test)} else None)`;
     case "pythonExpression": return node.text ?? "";
     default: return node.text ?? "";
   }
@@ -414,6 +583,60 @@ export function unparse(node) {
 /* ------------------------------------------------------------------ */
 /* Parser de estrutura (statements por indentação)                     */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Divide uma lista de tokens por VÍRGULAS DE PRIMEIRO NÍVEL.
+ *
+ * `a, b = f(1, 2)` divide em dois: o `f(1, 2)` é uma chamada, e a vírgula
+ * dela é argumento, não separador. Sem isso, os argumentos viravam alvos.
+ */
+/**
+ * Lê a anotação de tipo de um parâmetro, como texto.
+ *
+ * `float`, `int`, `Literal["frente", "tras"]`, `Distance` — o texto é o
+ * que interessa, e a informação semântica (número, enum, medida) é decidida
+ * depois, na camada semântica. Os colchetes de `Literal[...]` são
+ * respeitados para que a vírgula dentro deles não feche a anotação.
+ */
+function lerAnotacao(parser) {
+  const partes = [];
+  let colchete = 0;
+  let parenteses = 0;
+
+  /*
+   * Termina em `=`, `,` ou `)` no nível de fora. O `Literal["a", "b"]`
+   * continua por causa do colchete: a vírgula dentro dele não encerra.
+   */
+  while (parser.peek()) {
+    const token = parser.peek();
+    const fecha = colchete === 0 && parenteses === 0;
+    if (fecha && (token.value === "," || token.value === "=" || token.value === ")")) break;
+    if (token.value === "[") colchete += 1;
+    if (token.value === "]") colchete -= 1;
+    if (token.value === "(") parenteses += 1;
+    if (token.value === ")") parenteses -= 1;
+    partes.push(parser.next().value);
+  }
+  return partes.join("") || null;
+}
+
+function splitTopLevel(tokens) {
+  const partes = [];
+  let atual = [];
+  let profundidade = 0;
+  for (const token of tokens) {
+    if (token.value === "(" || token.value === "[" || token.value === "{") profundidade += 1;
+    if (token.value === ")" || token.value === "]" || token.value === "}") profundidade -= 1;
+    if (token.value === "," && profundidade === 0) {
+      partes.push(atual);
+      atual = [];
+      continue;
+    }
+    atual.push(token);
+  }
+  partes.push(atual);
+  return partes;
+}
 
 const COMPOUND_HEADS = ["if", "elif", "else", "for", "while", "def", "class", "try", "except", "finally", "with", "async", "match", "case"];
 
@@ -433,8 +656,58 @@ function joinLogicalLines(sourceLines) {
   const logical = [];
   let buffer = null;
 
+  /*
+   * DOCSTRING DE VÁRIAS LINHAS.
+   *
+   * Uma docstring é a fonte semântica mais rica que existe sem metadado:
+   * ela diz a unidade, o que o sinal significa e o que cada argumento faz.
+   * O tokenizador trabalha linha a linha, então a abertura `"""` ficava sem
+   * fechamento e a linha inteira era descartada com "unterminated string" —
+   * a docstring (e toda a informação dela) simplesmente sumia.
+   *
+   * A string tripla é unida antes da análise normal e entregue como um
+   * único token de texto, que o parser entende como `docstring`.
+   */
+  let emDocstring = false;
+  let delimitadorDocstring = "";
+
   sourceLines.forEach((raw, index) => {
     const lineNo = index + 1;
+
+    if (emDocstring) {
+      const fecha = raw.indexOf(delimitadorDocstring);
+      if (fecha === -1) {
+        buffer = buffer ? { ...buffer, text: `${buffer.text}\n${raw}` } : { text: raw, line: lineNo, endLine: lineNo, indent: indentOf(raw), depth: 0, isDocstring: true };
+        buffer.endLine = lineNo;
+        return;
+      }
+      emDocstring = false;
+      const antes = fecha === 0 ? "" : raw.slice(0, fecha);
+      const depois = raw.slice(fecha + delimitadorDocstring.length).trim();
+      logical.push({
+        text: `${buffer?.text ?? ""}${antes}`.trim(),
+        line: buffer?.line ?? lineNo,
+        endLine: lineNo,
+        indent: indentOf(raw),
+        isDocstring: true,
+      });
+      if (depois) {
+        logical.push({ text: depois, line: lineNo, endLine: lineNo, indent: indentOf(raw) });
+      }
+      buffer = null;
+      return;
+    }
+
+    const abre = raw.match(/("""|\'\'\')/);
+    if (abre && !raw.slice(abre.index + abre[0].length).includes(abre[0])) {
+      delimitadorDocstring = abre[0];
+      if (raw.indexOf(delimitadorDocstring, abre.index + delimitadorDocstring.length) === -1) {
+        emDocstring = true;
+        buffer = { text: raw.slice(abre.index), line: lineNo, endLine: lineNo, indent: indentOf(raw), depth: 0, isDocstring: true };
+        return;
+      }
+    }
+
     if (buffer) {
       buffer.text += ` ${raw.trim()}`;
       buffer.endLine = lineNo;
@@ -493,6 +766,19 @@ export function parseStatement(logical) {
     return { node: { type: "comment", text, source: baseSource }, error: null };
   }
 
+  /*
+   * DOCSTRING já unida por `joinLogicalLines`. Ela não passa pelo
+   * tokenizador de propósito: o tokenizador é linha-a-linha e só enxerga
+   * triplas na mesma linha. Aqui o texto vem inteiro, com as quebras
+   * preservadas, que é o que a análise semântica precisa ler.
+   */
+  if (logical.isDocstring) {
+    const bruto = String(logical.text ?? "");
+    const conteudo = bruto.replace(/^("""|\'\'\')/, "");
+    const linhas = conteudo.split("\n").map((l) => l.trim()).filter(Boolean);
+    return { node: { type: "docstring", text: conteudo, lines: linhas, source: baseSource }, error: null };
+  }
+
   const { tokens, error } = tokenizeLine(text);
   if (error) {
     return { node: null, error: { ...error, line, column: indent + error.column } };
@@ -538,11 +824,49 @@ export function parseStatement(logical) {
     const name = parser.next()?.value ?? "";
     const params = [];
     if (kind === "def" && parser.eat("(")) {
+      /*
+       * ASSINATURA COM ANOTAÇÃO DE TIPO.
+       *
+       * `def mover(distancia: float, velocidade: int = 300)` produzia DOIS
+       * parâmetros: a anotação era lida como o nome seguinte. A assinatura
+       * ficava errada — `mover` "recebia" um argumento chamado `float` — e
+       * qualquer bloco construído a partir dela ficava errado junto.
+       *
+       * A anotação é lida até o `=` ou a vírgula, preservada como texto, e
+       * `Literal["a", "b"]` fica inteira. É a informação que o conversor
+       * precisa para escolher o controle visual.
+       */
       while (parser.peek() && !parser.at(")")) {
+        // `*args` e `**kwargs` da biblioteca, não parâmetros da função.
+        if (parser.at("*") || parser.at("**")) {
+          /*
+           * `*args` e `**kwargs` são da biblioteca, não parâmetros da função.
+           * O tokenizer emite `*` e `**` separados, então a estrela é
+           * consumida e o nome vem em seguida — sem isso, `*` virava um
+           * parâmetro chamado "asterisco" e o nome virava OUTRO.
+           */
+          const estrelas = parser.next().value;
+          const nomeVar = parser.next()?.value ?? "args";
+          params.push({
+            name: nomeVar,
+            variadic: estrelas === "*",
+            variadicKeyword: estrelas === "**",
+            default: null,
+          });
+          parser.eat(",");
+          continue;
+        }
         const nameToken = parser.next();
+        let annotation = null;
+        if (parser.eat(":")) annotation = lerAnotacao(parser);
         let defaultValue = null;
         if (parser.eat("=")) defaultValue = parser.parseExpression();
-        if (nameToken?.type === "name") params.push({ name: nameToken.value, default: defaultValue, source: { startLine: line, startColumn: nameToken.start, endLine: line, endColumn: nameToken.end } });
+        if (nameToken?.type === "name") {
+          params.push({
+            name: nameToken.value, annotation, default: defaultValue,
+            source: { startLine: line, startColumn: nameToken.start, endLine: line, endColumn: nameToken.end },
+          });
+        }
         parser.eat(",");
       }
       parser.eat(")");
@@ -604,8 +928,17 @@ export function parseStatement(logical) {
     }
 
     if (head === "with") {
-      const items = [parser.parseExpression()];
-      while (parser.eat(",")) items.push(parser.parseExpression());
+      /*
+       * `with EXPR as NOME` — o `as` é a parte que faltava.
+       *
+       * O item era lido como `parser.parseExpression()`, que consome
+       * `open('a') as f` até o fim da linha e deixa o cursor no `:` sem
+       * esperar — daí o "expected ':'" numa linha perfeitamente correta.
+       * Como `as` é palavra-chave, ele também não podia ser tratado como
+       * nome comum.
+       */
+      const items = [parser.parseWithItem()];
+      while (parser.eat(",")) items.push(parser.parseWithItem());
       if (!parser.at(":")) return { node: null, error: { line, column: indent + text.length, message: "expected ':'" } };
       return { node: { type: "withStatement", items, block: true, source: baseSource }, error: null };
     }
@@ -622,11 +955,43 @@ export function parseStatement(logical) {
     }
   }
 
+  /*
+   * DOCSTRING — a primeira string do corpo de uma função ou classe.
+   *
+   * É a fonte semântica mais rica que existe sem metadado: diz a unidade
+   * de um parâmetro, o que o positivo significa, e o que cada argumento
+   * faz. Sem ela, o conversor só tem o nome do parâmetro.
+   *
+   * A string precisa ser TIRADA do corpo: deixar a docstring como
+   * statement fazia o Python regerado perder o texto e a anotação.
+   */
+  if (first?.type === "string") {
+    const token = parser.next();
+    const bruto = String(token.text ?? token.value ?? "");
+    const m = bruto.match(/^[rRbBuUfF]*("""|\'\'\'|"|\')([\s\S]*?)\1$/);
+    const conteudo = m ? m[2] : bruto;
+    const linhas = conteudo.split("\n").map((l) => l.trim()).filter(Boolean);
+    return {
+      node: { type: "docstring", text: conteudo, lines: linhas, quote: m ? m[1] : '"', source: baseSource },
+      error: null,
+    };
+  }
+
   /* ---- statements simples ---- */
   if (first?.value === "return") {
     parser.next();
     const value = parser.peek() ? parser.parseExpression() : null;
     return { node: { type: "return", value, source: baseSource }, error: null };
+  }
+  if (first?.value === "yield") {
+    /*
+     * `yield` é palavra-chave, mas não havia regra para ela. Sem esta, o
+     * `yield 1` caía como expressão solta, o conversor não reconhecia e o
+     * corpo da função virava `pass` — o gerador perdia o que produzia.
+     */
+    parser.next();
+    const value = parser.peek() ? parser.parseExpression() : null;
+    return { node: { type: "yield", value, source: baseSource }, error: null };
   }
   if (first?.value === "break") { parser.next(); return { node: { type: "break", source: baseSource }, error: null }; }
   if (first?.value === "continue") { parser.next(); return { node: { type: "continue", source: baseSource }, error: null }; }
@@ -665,9 +1030,55 @@ export function parseStatement(logical) {
   if (scan === "assign") {
     const eqIndex = tokens.findIndex((token) => token.value === "=");
     const targetParser = new ExpressionParser(tokens.slice(0, eqIndex), line);
-    const targets = [targetParser.parseExpression()];
-    const valueParser = new ExpressionParser(tokens.slice(eqIndex + 1), line);
-    const value = valueParser.parseExpression();
+    /*
+     * DESEMPACOTAMENTO: `a, b = 1, 2`.
+     *
+     * Só o primeiro alvo era lido, e `a, b = 1, 2` virava `a = 1` — o `b`
+     * sumia do programa sem aviso. Quando há vírgula nos alvos, eles são
+     * lidos um a um até o `=`; sem vírgula, é o caso comum de sempre.
+     */
+    const temVirgula = tokens.slice(0, eqIndex).some((token) => token.value === ",");
+    const targets = [];
+    if (temVirgula) {
+      for (const parte of splitTopLevel(tokens.slice(0, eqIndex))) {
+        if (!parte.length) continue;
+        targets.push(new ExpressionParser(parte, line).parseExpression());
+      }
+    } else {
+      targets.push(targetParser.parseExpression());
+    }
+    const direita = tokens.slice(eqIndex + 1);
+    // `x = 1 +` e `x = = 1`: a linha está pela metade e precisa dizer isso.
+    if (!direita.length) {
+      return { node: null, error: { line, column: indent + text.length, message: "expected expression after '='" } };
+    }
+    let value;
+    if (temVirgula) {
+      /*
+       * `a, b = 1, 2` — a direita é uma TUPLA, mesmo sem parênteses.
+       * Ler só a primeira fazia `b` sumir do valor, e `a, b = 1` estoura
+       * em tempo de execução. Os elementos continuam sendo expressões
+       * independentes, cada uma com a sua própria árvore.
+       */
+      const elementos = splitTopLevel(direita)
+        .filter((parte) => parte.length)
+        .map((parte) => new ExpressionParser(parte, line).parseExpression());
+      value = { type: "tuple", elements: elementos, parenthesized: false, source: baseSource };
+    } else {
+      value = new ExpressionParser(direita, line).parseExpression();
+    }
+    /*
+     * VALOR PELA METADE.
+     *
+     * `x = 1 +` e `x = = 1` passavam sem aviso: a árvore vinha incompleta,
+     * o bloco aparecia, o indicador dizia "sincronizado", e o SyntaxError
+     * só apareceria no robô. Agora a linha incompleta é dita aqui, com a
+     * posição, em vez de virar um programa que não roda.
+     */
+    if (ExpressionParser.incompleta(value)) {
+      const onde = value?.source?.startColumn ?? indent + text.length;
+      return { node: null, error: { line, column: onde, message: "incomplete expression" } };
+    }
     return { node: { type: "assignment", targets, value, source: baseSource }, error: null };
   }
 

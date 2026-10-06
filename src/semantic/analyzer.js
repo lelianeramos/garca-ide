@@ -27,6 +27,8 @@ const EXTERNAL_MODULES = new Set([
   "re", "typing", "utime", "usys", "gc", "machine", "network", "socket",
 ]);
 
+import { construirSchema } from "./functionSchema.js";
+
 /* ------------------------------------------------------------------ */
 /* Nomes de módulo a partir do caminho do VFS                          */
 /* ------------------------------------------------------------------ */
@@ -66,6 +68,37 @@ function walk(node, visit) {
  * Extrai símbolos do arquivo: funções, classes, variáveis, imports.
  * @param {{type:string, body:Array}} ir raiz do programa
  */
+/**
+ * Descreve uma função com tudo que um bloco precisa saber.
+ *
+ * `required` é separado de "tem default" porque é essa distinção que decide
+ * se o argumento vira campo obrigatório no bloco ou entra na engrenagem.
+ */
+function describeFunction(node) {
+  const params = (node.params || []).map((param) => {
+    const temDefault = param.default !== undefined && param.default !== null;
+    return {
+      name: param.name,
+      annotation: param.annotation ?? null,
+      default: temDefault ? param.default : null,
+      required: !temDefault && !param.variadic && !param.variadicKeyword,
+      variadic: Boolean(param.variadic),
+      variadicKeyword: Boolean(param.variadicKeyword),
+    };
+  });
+
+  const doc = (node.body || []).find((n) => n?.type === "docstring");
+
+  return {
+    name: node.name,
+    args: params.map((p) => p.name),
+    params,
+    defaults: params.map((p) => p.default),
+    docstring: doc ? { text: doc.text ?? "", lines: doc.lines ?? [] } : null,
+    line: node.source?.startLine ?? 1,
+  };
+}
+
 export function extractSymbols(ir) {
   const symbols = { functions: [], classes: [], variables: [], imports: [], aliases: {} };
   if (!ir) return symbols;
@@ -75,10 +108,19 @@ export function extractSymbols(ir) {
   walk(ir, (node) => {
     switch (node.type) {
       case "function":
-        symbols.functions.push({
-          name: node.name, args: (node.params || []).map((p) => p.name),
-          defaults: (node.params || []).map((p) => p.default), line: node.source?.startLine ?? 1,
-        });
+        /*
+         * SÍMBOLO DE FUNÇÃO.
+         *
+         * Antes disto só guardava `name`, os nomes dos argumentos e os
+         * defaults — o suficiente para completamento de código, insuficiente
+         * para virar bloco. O catálogo semântico precisa da assinatura REAL:
+         * anotação, default, obrigatoriedade, variádicos e a docstring.
+         *
+         * A docstring é lida do corpo porque o parser já a separou das outras
+         * instruções; guardá-la aqui é o que permite inferir unidade,
+         * significado do sinal e papel de cada campo sem regex no meio.
+         */
+        symbols.functions.push(describeFunction(node));
         break;
       case "classDefinition":
         symbols.classes.push({ name: node.name, line: node.source?.startLine ?? 1 });
@@ -383,10 +425,38 @@ export function librarySymbols(files) {
     if (!file.path?.endsWith(".py")) continue;
     const moduleName = moduleNameFromPath(file.path);
     for (const fn of file.symbols?.functions || []) {
+      /*
+       * O schema é construído AQUI, e não no momento de virar bloco.
+       *
+       * Motivo prático: o bloco é reconciliado por `blockId`, e o mesmo
+       * bloco pode ser reconstruído muitas vezes enquanto a criança arrasta
+       * as coisas. Construir o schema a cada vez significaria reanalisar a
+       * biblioteca inteira a cada gesto. Aqui ele é feito uma vez por
+       * arquivo, e `setLibraryFiles` só é chamado quando o conteúdo muda
+       * de verdade (ver `criarRastreadorArquivos`).
+       */
+      let schema = null;
+      try {
+        schema = construirSchema({
+          simbolo: fn,
+          linhas: file.content ? String(file.content).split("\n") : [],
+          modulo: moduleName,
+        });
+      } catch {
+        /*
+         * Biblioteca que não dá para analisar NÃO pode derrubar a IDE:
+         * sem schema, a chamada vira bloco genérico — que é o
+         * comportamento antigo e ainda é um resultado correto.
+         */
+        schema = null;
+      }
+
       out.push({
         name: fn.name, module: moduleName, path: file.path,
         args: fn.args || [], defaults: fn.defaults || [],
         kind: "function", line: fn.line,
+        docstring: fn.docstring ?? null,
+        schema,
       });
     }
     for (const cls of file.symbols?.classes || []) {

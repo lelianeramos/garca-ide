@@ -22,8 +22,20 @@ import {
   membersOf, membersOfChain, resolve as resolveApi, tail,
 } from "../pybricks/apiRegistry.js";
 import { tokenizeLine } from "../parser/pythonParser.js";
+import { editorMetrics, FALLBACK } from "./editorMetrics.js";
 
-export const LINE_HEIGHT = 20;
+/**
+ * LINE_HEIGHT deixou de ser constante: quem manda é a métrica medida do
+ * próprio textarea (ver editorMetrics.js). 20px continua sendo o valor
+ * inicial do design system e o fallback quando o DOM ainda não existe.
+ */
+export let LINE_HEIGHT = FALLBACK.lineHeight;
+
+/** Reflete a métrica real no editor (chamado pelo EditorView). */
+export function setLineHeight(value) {
+  if (Number.isFinite(value) && value > 0) LINE_HEIGHT = value;
+}
+
 const TAB = "    ";
 
 /* ------------------------------------------------------------------ */
@@ -32,13 +44,20 @@ const TAB = "    ";
 
 /**
  * Gera a régua de números. Um <div class="ln"> por linha — nunca texto corrido.
+ *
+ * Tudo vai dentro de um `.ln-track`: é ELE que desliza com a rolagem
+ * (`transform: translateY(-scrollTop)`). Se o transform fosse aplicado na
+ * faixa inteira, a cor de fundo e a borda da régua desceriam junto com os
+ * números e apareceria um buraco no topo ao rolar.
+ *
  * @param {number} count
  * @param {number} activeLine linha do cursor (1-based) — recebe destaque
  * @param {Array<number>} errorLines linhas com diagnóstico
  */
 export function renderLineNumbers(count, activeLine = 0, errorLines = []) {
   const errors = new Set(errorLines);
-  const fragment = document.createDocumentFragment();
+  const track = document.createElement("div");
+  track.className = "ln-track";
   const total = Math.max(1, count);
 
   for (let line = 1; line <= total; line += 1) {
@@ -48,16 +67,22 @@ export function renderLineNumbers(count, activeLine = 0, errorLines = []) {
     if (errors.has(line)) element.classList.add("ln-error");
     element.textContent = String(line);
     element.dataset.line = String(line);
-    fragment.appendChild(element);
+    track.appendChild(element);
   }
-  return fragment;
+  return track;
+}
+
+/** Elemento deslizante da régua (o `.line-numbers` em si é a faixa fixa). */
+export function lineTrack(gutter) {
+  return gutter?.querySelector(".ln-track") ?? null;
 }
 
 /** Alinha a régua e o realce com a rolagem do textarea. */
 export function syncScroll(textarea, gutter, highlight) {
   const top = textarea.scrollTop;
   const left = textarea.scrollLeft;
-  if (gutter) gutter.style.transform = `translateY(${-top}px)`;
+  const track = lineTrack(gutter);
+  if (track) track.style.transform = `translateY(${-top}px)`;
   if (highlight) {
     highlight.scrollTop = top;
     highlight.scrollLeft = left;
@@ -119,6 +144,14 @@ export function highlightLine(text) {
 
 /**
  * Realça o programa inteiro.
+ *
+ * CORREÇÃO ESTRUTURAL (bug do cursor): cada linha é um <span class="code-line">
+ * com `display:block` — ou seja, CADA LINHA JÁ É UMA CAIXA. Por isso as caixas
+ * são concatenadas com "" e NÃO com "\n": dentro de um contêiner com
+ * `white-space: pre`, aquele "\n" viraria uma caixa de linha extra e cada linha
+ * ocuparia o dobro da altura do textarea. O clique visual deixaria de bater com
+ * a linha lógica (clicar na 3 caía na 2).
+ *
  * @param {string} code
  * @param {Array} diagnostics  [{line, severity}]
  * @param {number} activeLine
@@ -135,13 +168,9 @@ export function highlightCode(code, diagnostics = [], activeLine = 0) {
       if (errorLines.has(lineNumber)) classes.push("error-line");
       else if (warnLines.has(lineNumber)) classes.push("warn-line");
       if (lineNumber === activeLine) classes.push("active-line");
-
-      // Linha vazia precisa de um caractere invisível para manter os 20px
-      const content = line.length ? highlightLine(line) : "";
-      return `<span class="${classes.join(" ")}" data-line="${lineNumber}">${content}</span>`;
+      return `<span class="${classes.join(" ")}" data-line="${lineNumber}">${highlightLine(line)}</span>`;
     })
-    // Quebra REAL entre as linhas: sem isto os números/linhas se emendam
-    .join("\n");
+    .join("");
 }
 
 /* ------------------------------------------------------------------ */
@@ -440,21 +469,19 @@ export function applyCompletion(textarea, completion) {
 /* ------------------------------------------------------------------ */
 
 /**
- * Calcula onde abrir a lista, a partir da linha/coluna do cursor.
- * Usa a métrica real do editor (12px/20px, padding 12px 53px).
+ * Calcula onde abrir a lista de sugestões, a partir da linha/coluna do cursor.
+ * Usa a métrica MEDIDA do editor (editorMetrics.js) — nunca 7.2/53/12 chutados.
  */
 export function completionPosition(textarea, code, cursor) {
   const before = String(code).slice(0, cursor);
   const line = before.split("\n").length - 1;
   const column = before.length - (before.lastIndexOf("\n") + 1);
-  const charWidth = 7.2; // JetBrains Mono / Consolas 12px ≈ 7.2px
-
-  const paddingLeft = 53;
-  const paddingTop = 12;
+  const metrics = editorMetrics();
+  const lineHeight = LINE_HEIGHT || metrics.lineHeight;
 
   return {
-    left: paddingLeft + column * charWidth - textarea.scrollLeft,
-    top: paddingTop + (line + 1) * LINE_HEIGHT - textarea.scrollTop,
+    left: metrics.paddingLeft + column * metrics.charWidth - textarea.scrollLeft,
+    top: metrics.paddingTop + (line + 1) * lineHeight - textarea.scrollTop,
   };
 }
 
@@ -519,7 +546,8 @@ export function signatureHelp(code, cursor) {
 
 export { ICONS, TAB };
 export default {
-  renderLineNumbers, syncScroll, highlightCode, highlightLine, nextIndent,
+  renderLineNumbers, lineTrack, syncScroll, highlightCode, highlightLine, nextIndent,
   reindent, handlePairKey, completionContext, getCompletions, applyCompletion,
-  completionPosition, cursorPosition, documentationAt, signatureHelp, LINE_HEIGHT,
+  completionPosition, cursorPosition, documentationAt, signatureHelp,
+  setLineHeight, get LINE_HEIGHT() { return LINE_HEIGHT; },
 };

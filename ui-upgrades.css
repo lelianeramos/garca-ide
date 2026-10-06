@@ -374,16 +374,38 @@
 @media(max-width:1450px){
 
   .main-grid,.main-grid.github-open{
-    grid-template-columns:185px minmax(500px,1.1fr) minmax(420px,1fr) 0
+    grid-template-columns:
+      var(--explorer-width)
+      minmax(0, 1.1fr)
+      var(--code-width)
+      0
   }
 
+  /*
+    CAUSA RAIZ DO SCROLL HORIZONTAL (item #31)
+
+    O drawer do GitHub e do Explorador sao sobreposicao: eles deslizam por
+    cima do workspace, entao nao devem empurrar nem ser empurrados pelo
+    grid. Antes eles eram `position:absolute` dentro do `.main-grid` e
+    "guardados" com transform:translateX(±102%). Essa e a armadilha: um
+    elemento TRANSFORMADO continua existindo na area de rolagem do
+    ancestral — o `.app` herdava 285px de scroll horizontal em toda tela
+    abaixo de 1450px, que e exatamente o defeito de rolar de lado no
+    tablet. `visibility:hidden` tambem nao resolve: a caixa continua
+    contando.
+
+    A correcao e de arvore, nao cosmetica: `position:fixed` ancora o
+    drawer na JANELA, que e onde um drawer de verdade pertence. Ele sai do
+    fluxo do grid, some da area de rolagem e volta a guardar-se com
+    transform — que agora move apenas a pintura, sem estender nada.
+  */
   .github-panel{
-    position:absolute;
-    z-index:24;
+    position:fixed;
+    z-index:120;
     right:0;
     top:0;
     bottom:0;
-    width:285px;
+    width:min(285px, 88vw);
     box-shadow:-18px 0 45px #0009;
     transform:translateX(102%);
     opacity:1!important;
@@ -452,8 +474,35 @@
     height:40px
   }
 
+  /*
+    O piso do workspace e 455px aqui porque o Python ja encolheu para
+    --code-width e o explorador ja e estreito. minmax(0,1fr) em vez de
+    minmax(455px,1fr): com 455px de piso, 175 + 455 + 232 = 862px, e
+    qualquer janela entre 862 e 1024 estourava. O workspace e o que DEVE
+    ceder; com piso 0 ele encolhe até a janela, e o conteudo rola dentro.
+  */
+  /*
+    Item #26 em tela estreita: o Python cede o espaco para o workspace.
+
+    O piso do workspace e 455px aqui porque o Python ja encolheu para
+    --code-width e o explorador ja e estreito. minmax(0,1fr) em vez de
+    minmax(455px,1fr): com 455px de piso, 175 + 455 + 232 = 862px, e
+    qualquer janela entre 862 e 1024 estourava. O workspace e o que DEVE
+    ceder; com piso 0 ele encolhe ate a janela, e o conteudo rola dentro.
+
+    --code-width encolhe mais agressivamente porque o Python e o painel
+    RECOLHIVEL: a criança pode dates de um toque, e o workspace nao pode.
+  */
+  .main-grid{
+    --code-width:clamp(0px, 26vw - 96px, 300px)
+  }
+
   .main-grid,.main-grid:not(.github-open),.main-grid.github-open{
-    grid-template-columns:175px minmax(455px,1fr) minmax(390px,.9fr) 0
+    grid-template-columns:
+      var(--explorer-width)
+      minmax(0, 1fr)
+      var(--code-width)
+      0
   }
 
   .blocks-pane{
@@ -497,16 +546,19 @@
   .code-column{
     grid-column:1;
     grid-row:2;
-    border-top:1px solid var(--gb-line)
+    border-top:1px solid var(--gb-line);
+    opacity:1!important;
+    pointer-events:auto!important
   }
 
+  /* Mesmo principio: drawer e sobreposicao, mora na janela, nao no grid. */
   .file-explorer{
-    position:absolute;
-    z-index:26;
+    position:fixed;
+    z-index:130;
     left:0;
     top:0;
     bottom:0;
-    width:230px;
+    width:min(230px, 84vw);
     box-shadow:18px 0 45px #000a;
     transform:translateX(-102%);
     opacity:1!important;
@@ -633,11 +685,11 @@
   }
 
   .line-numbers{
-    width:34px;
-    padding-left:3px
+    width:34px
   }
 
-  .highlight,.editor-shell textarea{
+  .highlight,
+  .editor-shell textarea{
     padding-left:43px
   }
 

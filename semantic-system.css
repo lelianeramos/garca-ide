@@ -22,8 +22,32 @@
    ========================================================================== */
 
 :root {
-  --line-height-code: 20px;
+  /* ------------------------------------------------------------------
+     GEOMETRIA DO EDITOR — fonte única da verdade.
+     O <textarea> (onde o navegador posiciona o caret) e o <pre> de realce
+     (o que o usuário enxerga) consomem EXATAMENTE estas variáveis. Se as
+     duas camadas divergirem, clicar na linha visível N coloca o cursor em
+     outra linha — foi assim que nasceu o bug do cursor. Não reintroduza
+     valores avulsos aqui: mexa só neste bloco.
+     ------------------------------------------------------------------ */
+  --code-font-size: 12px;
+  --code-line-height: 20px;
+  --line-height-code: var(--code-line-height);
+  --code-pad-top: 12px;
+  --code-pad-right: 14px;
+  --code-pad-bottom: 30px;
+  --code-pad-left: 53px;
   --gutter-width: 42px;
+  --code-font: var(--code-font-size)/var(--code-line-height) "Cascadia Code", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+
+  /* Espaçamento da coluna de categorias (escala 4/8/12/16/24/32) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
   --block-radius: 7px;
   --block-notch-width: 30px;
   --block-notch-left: 18px;
@@ -64,19 +88,22 @@
    ========================================================================== */
 
 .line-numbers {
-  /* A régua é uma faixa que desliza; o conteúdo é que se move (translateY). */
-  overflow: visible;
+  /* A faixa fica FIXA (fundo + borda). Só a trilha interna desliza. */
+  overflow: hidden;
   white-space: normal;
-  contain: layout style;
+  pointer-events: none;   /* nunca rouba o clique do editor */
+}
+
+.line-numbers .ln-track {
   will-change: transform;
-  pointer-events: none;
+  padding: var(--code-pad-top) 8px 0;
 }
 
 .line-numbers .ln {
   display: block;                 /* <-- a correção: bloco, não texto corrido */
-  height: var(--line-height-code);
-  line-height: var(--line-height-code);
-  font: 12px/20px "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  height: var(--code-line-height);
+  line-height: var(--code-line-height);
+  font: var(--code-font);
   font-variant-numeric: tabular-nums;
   text-align: right;
   color: #50677d;
@@ -110,15 +137,64 @@
   transform: translateY(-50%);
 }
 
-/* Realce: mesma métrica do textarea, uma linha por nó */
+/* ==========================================================================
+   1.b GEOMETRIA COMPARTILHADA — realce e textarea são a MESMA caixa
+   ==========================================================================
+   Regra do bug do cursor: as duas camadas precisam de fonte, line-height,
+   padding, tab-size, letter-spacing e box-sizing idênticos. Tudo vem das
+   variáveis --code-*; não escreva números aqui.
+   ========================================================================== */
+
+.highlight,
+.editor-shell textarea {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: var(--code-pad-top) var(--code-pad-right) var(--code-pad-bottom) var(--code-pad-left);
+  border: 0;
+  outline: 0;
+  overflow: auto;
+  tab-size: 4;
+  font: var(--code-font);
+  font-variant-ligatures: none;
+  font-kerning: none;
+  text-rendering: optimizeSpeed;
+  word-spacing: 0;
+  overflow-wrap: normal;
+  word-break: normal;
+  text-align: left;
+  text-indent: 0;
+  box-sizing: border-box;
+}
+
 .highlight {
-  contain: layout style;
+  /* `normal` no contêiner: cada .code-line é uma caixa, então nenhum
+     caractere de espaço em branco entre elas vira uma linha fantasma. */
+  white-space: normal;
+  pointer-events: none;
+  z-index: 1;
+  color: #d9e4ef;
+}
+
+.editor-shell textarea {
+  white-space: pre;
+  resize: none;
+  background: transparent;
+  color: transparent;
+  caret-color: #ffffff;
+  -webkit-text-fill-color: transparent;
+  z-index: 3;
+}
+
+.editor-shell textarea::selection {
+  background: rgba(36, 130, 190, 0.52);
 }
 
 .highlight .code-line {
-  display: block;                 /* bloco -> cada linha é uma caixa própria */
-  min-height: var(--line-height-code);
-  line-height: var(--line-height-code);
+  display: block;                 /* cada linha é uma caixa de altura fixa */
+  height: var(--code-line-height);
+  min-height: var(--code-line-height);
+  line-height: var(--code-line-height);
   white-space: pre;
 }
 
@@ -142,7 +218,9 @@
   right: 0;
   bottom: 0;
   width: 7px;
-  z-index: 3;
+  z-index: 2;
+  /* NUNCA captura o clique: essa faixa fica sobre a margem direita do
+     editor e historically roubava cliques de linhas longas. */
   pointer-events: none;
   will-change: transform;
 }
@@ -153,8 +231,7 @@
   width: 4px;
   height: 12px;
   border-radius: 2px;
-  pointer-events: auto;
-  cursor: help;
+  pointer-events: none;
 }
 
 .ruler-mark.ruler-error { background: var(--error); }
@@ -330,7 +407,7 @@
   cursor: grabbing;
 }
 
-.lib-label { flex: 1 1 auto; min-width: 0; }
+.lib-label-short, .lib-label-full { flex: 1 1 auto; min-width: 0; }
 
 .lib-args {
   font-style: normal;
@@ -504,6 +581,14 @@
 }
 
 /* Parâmetros avançados revelados ao expandir */
+/*
+  Painel de parametros extras (velocidade, modelo do HUB, sentido...).
+
+  `display:flex` vencia o atributo `hidden` do HTML: os campos apareciam
+  SEMPRE abertos, transformando cada bloco em tres linhas de controles para
+  quem so queria a instrucao principal. Item #25 - mostrar so o que importa
+  naquele momento.
+*/
 .gb-advanced {
   display: flex;
   flex-wrap: wrap;
@@ -512,6 +597,10 @@
   margin-top: 7px;
   padding-top: 7px;
   border-top: 1px dashed rgba(255, 255, 255, 0.28);
+}
+
+.gb-advanced[hidden] {
+  display: none;
 }
 
 .gb-advanced-field {
@@ -639,18 +728,14 @@
   padding: 3px 0 3px 4px;
 }
 
+/*
+   REGRA DESATIVADA DE PROPÓSITO.
+   O painel de "nenhum bloco" com caixa tracejada e três冠 caminhos foi
+   removido (item #3): um workspace vazio já se comunica. A aparência atual,
+   discreta e mostrada só na primeira vez, está em block-layout.css §8.
+   Sobrescrever aqui de volta traria a mensagem de volta.
+*/
 .workspace-empty {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: min(400px, 84%);
-  padding: 22px 24px;
-  border: 1px dashed rgba(120, 160, 200, 0.35);
-  border-radius: var(--radius-panel);
-  background: rgba(9, 26, 42, 0.82);
-  color: var(--text-secondary);
-  text-align: center;
   pointer-events: none;
 }
 

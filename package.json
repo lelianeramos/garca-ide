@@ -4,25 +4,28 @@
   "description": "IDE web de robótica FLL: blocos LEGO Education pt-BR + Python Pybricks com sincronização bidirecional, SPIKE Prime via Bluetooth.",
   "private": true,
   "type": "module",
-
   "//engines": "Versão major FIXA. Um range solto (>=20.0.0) faz a Vercel avisar que vai subir sozinho a cada nova major. Node 20 entrou em EOL e novos builds com ele falham desde 2026-10-01 — por isso 22.x, não 20.x.",
   "engines": {
     "node": "22.x"
   },
-
   "//scripts": "Sem 'start' e sem 'build' de propósito: a presença desses scripts faz a Vercel inferir um servidor Node.js e falhar com 'No entrypoint found'. O projeto é estático + api/**. Em dev use 'npm run dev'.",
   "scripts": {
     "dev": "node tools/dev-server.mjs",
-    "test": "npm run test:blocks && npm run test:api && npm run test:py",
+    "test": "npm run test:blocks && npm run test:main && npm run test:sockets && npm run test:dom && npm run test:semantic && npm run test:hard && npm run test:audit && npm run test:api && npm run test:py",
     "test:blocks": "node tests/block_engine.test.cjs",
     "test:api": "node tests/github_commit.test.mjs && node tests/repository_path.test.mjs",
     "test:py": "python3 -m unittest discover -s tests -v",
-    "test:semantic": "python3 -m unittest tests.test_semantic -v",
+    "test:semantic": "node --test tests/semantic_criteria.test.mjs tests/semantic_pipeline.test.mjs tests/semantic_ui.test.mjs",
     "fetch:wasm": "npm install @pybricks/mpy-cross-v6 --no-save && cp node_modules/@pybricks/mpy-cross-v6/build/mpy-cross-v6.wasm vendor/mpy-cross-v6.wasm && cp node_modules/@pybricks/mpy-cross-v6/build/mpy-cross-v6.js vendor/mpy-cross-v6.js",
-    "vercel:doctor": "node tools/check-deploy.mjs"
+    "vercel:doctor": "node tools/check-deploy.mjs",
+    "test:main": "node tests/main_function.test.mjs",
+    "test:sockets": "node --test tests/roundtrip.test.mjs tests/socket_render.test.mjs tests/paste_flow.test.mjs tests/preserve_code.test.mjs",
+    "test:dom": "node --test tests/render_lifecycle.test.mjs",
+    "test:hard": "node --test tests/cycle_stress.test.mjs tests/hostile_inputs.test.mjs tests/layout_guard.test.mjs",
+    "test:audit": "node --test tests/final_audit.test.mjs"
   },
-
   "devDependencies": {
-    "@pybricks/mpy-cross-v6": "^2.0.0"
+    "@pybricks/mpy-cross-v6": "^2.0.0",
+    "linkedom": "^0.18.13"
   }
 }
