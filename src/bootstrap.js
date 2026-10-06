@@ -10,9 +10,10 @@
  * Regra R01: frontend vive em studio-*.js / src/**. Nada em api/**.
  */
 
-import { CATEGORIES, CATEGORY_COLOR, PYBRICKS_API, IMPORTABLE, MODULES } from "./pybricks/apiRegistry.js";
-import { BLOCK_CATALOG, BLOCK_BY_ID, blocksByCategory, blockDefaults } from "./blocks/blockCatalog.js";
+import { CATEGORIES, PROJECT_CATEGORIES, CATEGORY_COLOR, PYBRICKS_API, IMPORTABLE, MODULES, ptFunctionLabel } from "./pybricks/apiRegistry.js";
+import { BLOCK_CATALOG, BLOCK_BY_ID, blocksByCategory, blockDefaults, blockDoc } from "./blocks/blockCatalog.js";
 import { renderPaletteBlock, renderBlock, renderStack, ptNumber, staticLabel } from "./blocks/blockRenderer.js";
+import { ROBOT_CONFIG, cmPerRotation } from "./config/robot.js";
 import { SyncManager, SYNC_STATE } from "./editor/syncManager.js";
 import { EditorView } from "./ui/editorView.js";
 import { Workspace } from "./ui/workspace.js";
@@ -26,9 +27,9 @@ import { bundleProject, preflight } from "./python/bundler.js";
 import { generateProgram, ensureImports } from "./python/codeGenerator.js";
 import { librarySymbols, IMPORT_STATE } from "./semantic/analyzer.js";
 
-const STORAGE_KEY = "garca-studio:project:v2";
+const STORAGE_KEY = "garca-studio:project:v3";
 const PREFS_KEY = "garca-studio:prefs:v1";
-const LEGACY_KEYS = ["garca-studio:project", "garca-ide:project", "garca:draft"];
+const LEGACY_KEYS = ["garca-studio:project", "garca-ide:project", "garca:draft", "garca-studio:project:v2"];
 
 /**
  * Guarda contra execução fora do navegador (B20).
@@ -56,12 +57,18 @@ class Studio {
     this.history = new History();
     this.sync = new SyncManager({ onChange: (payload) => this.onSync(payload) });
     this.activeFileId = null;
-    this.activeCategory = "motors";
+    this.activeCategory = "events";
     this.applyingFromBlocks = false;
     this.outputs = [];
-    this.prefs = { sound: true, volume: 24, githubOpen: false, explorerOpen: true, libraryOpen: true };
+    this.prefs = {
+      sound: true, volume: 24, githubOpen: false, explorerOpen: true, libraryOpen: true,
+      codeWidth: 0, codeCollapsed: false,
+    };
     this.hub = { state: "DISCONNECTED", device: null, server: null, battery: null, firmware: null, model: null };
     this.dragSchema = null;
+    /** true = há alteração que ainda não foi gravada no navegador (dirty) */
+    this.dirty = false;
+    this.lastSavedAt = null;
   }
 
   /* ============================== BOOT ============================== */
@@ -84,18 +91,23 @@ class Studio {
     this.bindContextMenus();
     this.bindPreferences();
     this.bindPaletteScroll();      // pedido do usuário: rolar a paleta com a roda do mouse
+    this.bindSmartSave();          // salva quando a edição ACABAR (nunca por timer)
+    this.bindCodePanelResize();    // painel de código expansível/retrátil
     this.bindDesktopOnlyNotice();
     this.openFile(this.vfs.project.entrypoint ?? this.vfs.files[0]?.file_id, { initial: true });
 
     this.terminal.info("Garça de Botas Code Studio pronto.");
-    this.terminal.info("Escreva Python ou arraste blocos — as duas vistas se atualizam sozinhas.");
+    this.terminal.info("Clique num bloco para acrescentá-lo ao programa. As duas vistas se atualizam sozinhas.");
     this.refreshLibrarySymbols();
-    this.github?.loadUsers();
+    this.github?.loadStatus();
     this.updateHubCard();
 
-    // Rascunho salvo automaticamente (Parte 25)
-    this.autosaveTimer = setInterval(() => this.autosave(), 4000);
+    // Sem setInterval, sem timer de gravação: o salvamento acontece quando a
+    // edição termina (blur), quando o arquivo/aba muda e ao fechar a janela.
     window.addEventListener("beforeunload", () => this.saveProject());
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") this.saveProject();
+    });
   }
 
   collectDom() {
@@ -105,9 +117,10 @@ class Studio {
       app: id("app"),
       mainGrid: id("mainGrid"),
       // toolbar
-      filesToggle: id("filesToggle"), newBtn: id("newBtn"), settingsBtn: id("settingsBtn"),
+      filesToggle: id("filesToggle"), newBtn: id("newBtn"),
       connectBtn: id("connectBtn"), runBtn: id("runBtn"), stopBtn: id("stopBtn"), downloadBtn: id("downloadBtn"),
-      hubCard: id("hubCard"), hubState: id("hubState"), hubModel: id("hubModel"), hubBattery: id("hubBattery"),
+      hubCard: id("hubCard"), hubState: id("hubState"), hubModel: id("hubModel"),
+      hubDot: id("hubDot"), hubBattery: id("hubBattery"),
       githubToggle: id("githubToggle"), profileStack: id("profileStack"),
       // saídas
       outputTabs: id("outputTabs"), addOutput: id("addOutput"),
@@ -120,10 +133,14 @@ class Studio {
       categories: id("categories"), library: id("library"), categoryTitle: id("categoryTitle"),
       collapseLibrary: id("collapseLibrary"), libraryList: id("libraryList"),
       workspace: id("workspace"), workspaceWorld: id("workspaceWorld"), blockStack: id("blockStack"),
+      // painel de código expansível
+      codeSplitter: id("codeSplitter"), codePanelToggle: id("codePanelToggle"), codeColumn: id("codeColumn"),
       // editor
       codeEditor: id("codeEditor"), lineNumbers: id("lineNumbers"), highlight: id("highlight"),
       autocomplete: id("autocomplete"), activeFileTab: id("activeFileTab"), fileDirty: id("fileDirty"),
       syncState: id("syncState"), diagnosticRuler: id("diagnosticRuler"), editorStatus: id("editorStatus"),
+      // github
+      githubStatus: id("githubStatus"), lastCommit: id("lastCommit"),
       // terminal
       terminalLines: id("terminalLines"), clearTerminal: id("clearTerminal"), problemCount: id("problemCount"),
       terminalTabs: all(".terminal-head button[data-tab]"),
@@ -149,16 +166,45 @@ class Studio {
    * B16: migra/limpa rascunhos antigos do localStorage para o exemplo
    * pré-carregado não ressuscitar.
    */
+  /*
+   * PROJETO SALVO — mudança de formato (v2 -> v3).
+   *
+   * Na v3 um parâmetro de expressão pode conter um BLOCO aninhado, em vez
+   * de texto. Um projeto v2 tem `value: "(erro * KP_STRAIGHT)"` onde a v3
+   * espera uma árvore de blocos: carregá-lo faria a tela mostrar "[object
+   * Object]" dentro de todo operador do projeto.
+   *
+   * A decisão tomada foi ZERAR com aviso, em vez de escrever um conversor
+   * de migração. Um conversor teria de adivinhar a intenção de cada string
+   * — `"50"` é número ou texto? `"a if b else c"` é expressão ou label? — e
+   * um erro de migração corrompe trabalho silenciosamente, que é pior do
+   * que perdê-lo de forma visível.
+   *
+   * Por isso: apaga, e DIZ QUE APAGOU. Uma criança que perdeu o trabalho
+   * precisa saber que houve mudança de versão, não simplesmente abrir um
+   * projeto vazio sem explicação.
+   */
   migrateLegacyStorage() {
+    let aviso = null;
     try {
       for (const key of LEGACY_KEYS) localStorage.removeItem(key);
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
+
       const parsed = JSON.parse(raw);
-      if (!parsed || parsed.version !== 2) localStorage.removeItem(STORAGE_KEY);
+      if (parsed && parsed.version === 3) return;
+
+      localStorage.removeItem(STORAGE_KEY);
+      if (parsed && parsed.version === 2) {
+        aviso = "A Studio atualizou o formato dos blocos. Os projetos salvos antes disso foram reiniciados.";
+      } else {
+        aviso = "Não foi possível ler o projeto salvo. Um novo projeto foi aberto.";
+      }
     } catch {
       localStorage.removeItem(STORAGE_KEY);
+      aviso = "O projeto salvo estava corrompido. Um novo projeto foi aberto.";
     }
+    if (aviso) queueMicrotask(() => this.toast(aviso, "aviso", 9000));
   }
 
   /* ============================ PROJETO ============================ */
@@ -186,23 +232,78 @@ class Studio {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.vfs.toJSON()));
       localStorage.setItem(PREFS_KEY, JSON.stringify(this.prefs));
-    } catch { /* quota cheia: mantém a sessão funcionando */ }
+      this.dirty = false;
+      this.lastSavedAt = Date.now();
+      this.renderSaveState();
+    } catch {
+      this.terminal?.warning("Não foi possível salvar no navegador (armazenamento cheio). O código continua no GitHub se você usar Atualizar código.");
+    }
   }
 
-  autosave() {
-    const dirty = this.vfs.files.some((file) => file.modified);
-    if (!dirty) return;
+  /**
+   * SALVAMENTO INTELIGENTE — sem timer.
+   *
+   * O que o usuário pediu: nada de gravar a cada X segundos. O arquivo entra
+   * em `dirty` quando muda e é gravado quando a edição ACABA:
+   *   • blur do editor de código (clicou fora da área de código);
+   *   • blur de um campo de bloco (terminou de mexer no valor);
+   *   • troca de arquivo / de aba de saída;
+   *   • fechar a janela ou esconder a aba do navegador;
+   *   • Ctrl+S.
+   * Se nada mudou, nada é gravado.
+   */
+  markDirty(reason = "") {
+    this.dirty = true;
+    this.renderSaveState(reason);
+  }
+
+  /** Grava apenas se houver alteração de verdade. */
+  saveIfDirty(reason = "") {
+    if (!this.dirty) return false;
     this.saveProject();
     this.flashSaved();
+    return true;
+  }
+
+  bindSmartSave() {
+    // Fim da edição no editor de código.
+    this.dom.codeEditor?.addEventListener("blur", () => {
+      this.saveIfDirty("saiu do editor");
+    });
+    // Fim da edição em qualquer campo de bloco (change = Enter/blur).
+    this.dom.workspace?.addEventListener("change", (event) => {
+      if (event.target.closest(".gb-field")) this.saveIfDirty("terminou de editar o bloco");
+    });
+    // Fechar menus/popovers também fecha a edição.
+    document.addEventListener("pointerdown", (event) => {
+      if (event.target.closest(".program-block") || event.target.closest(".editor-shell")) return;
+      this.saveIfDirty("clicou fora");
+    }, true);
+  }
+
+  renderSaveState(reason = "") {
+    const node = this.dom.fileDirty;
+    if (!node) return;
+    if (this.dirty) {
+      node.textContent = "Alterações não salvas";
+      node.title = reason ? `Alterações não salvas (${reason})` : "Alterações não salvas";
+      node.classList.remove("saved");
+      node.dataset.state = "dirty";
+      return;
+    }
+    node.dataset.state = this.lastSavedAt ? "saved" : "clean";
+    node.textContent = this.lastSavedAt ? "Salvo" : "";
+    node.title = this.lastSavedAt ? `Salvo às ${new Date(this.lastSavedAt).toLocaleTimeString("pt-BR")}` : "";
   }
 
   flashSaved() {
     const node = this.dom.fileDirty;
     if (!node) return;
-    node.textContent = "Rascunho salvo";
+    node.textContent = "Salvo";
     node.classList.add("saved");
+    node.dataset.state = "saved";
     clearTimeout(this.savedTimer);
-    this.savedTimer = setTimeout(() => { node.classList.remove("saved"); node.textContent = ""; }, 1600);
+    this.savedTimer = setTimeout(() => this.renderSaveState(), 2200);
   }
 
   loadPrefs() {
@@ -225,6 +326,8 @@ class Studio {
     if (!file) return;
 
     if (this.activeFileId && this.activeFileId !== fileId) {
+      // Trocar de arquivo é um ponto de salvamento: a edição anterior acabou.
+      this.saveIfDirty("troca de arquivo");
       const current = this.activeFile;
       if (current) {
         current.blocks = this.sync.blocks;
@@ -241,6 +344,7 @@ class Studio {
     if (this.dom.activeFileTab) this.dom.activeFileTab.textContent = file.path.replace(/^\//, "");
     if (this.dom.statusFile) this.dom.statusFile.textContent = `Arquivo: ${file.name}`;
     if (this.dom.repoPath) this.dom.repoPath.value = repositoryPath(file, this.activeOutputNumber);
+    this.renderSaveState();
 
     this.workspace?.setView(file.view ?? { panX: 24, panY: 18, zoom: 1 });
     this.sync.libraryFunctions = this.vfs.libraryFunctions(file);
@@ -267,6 +371,9 @@ class Studio {
   refreshLibrarySymbols() {
     this.sync.setLibraryFiles(this.vfs.files);
     this.refreshEditorScope();
+    // As contagens das funções do projeto podem ter mudado: atualiza
+    // os números da coluna de categorias e a paleta.
+    this.renderCategories();
     this.renderLibrary();
     const broken = this.sync.brokenImports;
     for (const entry of broken) {
@@ -314,6 +421,34 @@ class Studio {
     if (this.dom.projectName) this.dom.projectName.textContent = this.vfs.project.name.toUpperCase();
   }
 
+  /**
+   * Abre/fecha uma pasta. O estado fica no VFS (`folder.expanded`) e é
+   * salvo com o projeto, então sobrevive a recarregar a página.
+   *
+   * Pastas intermediárias (criadas por implied path ao adicionar um arquivo
+   * em `a/b/c.py`) entram no VFS no primeiro clique — é o que garante que o
+   * estado continue existindo mesmo depois do `buildTree` recriar os nós.
+   */
+  /** Menu de contexto do projeto (usado pelo botão Projeto e pela árvore). */
+  projectMenuItems() {
+    return projectMenuItems(this);
+  }
+
+  toggleFolder(path) {
+    let folder = this.vfs.folders.find((item) => item.path === path);
+    if (!folder) {
+      // Pasta implícita (só existe no caminho de algum arquivo): registra
+      // para poder guardar o estado dela daqui em diante. `folder_id` segue o
+      // mesmo formato das pastas criadas pelo usuário, porque as duas vão
+      // para o mesmo `project.folders` na hora de salvar.
+      folder = { folder_id: `folder_${path.replace(/[^a-z0-9]+/gi, "_")}`, path, name: baseName(path), expanded: false };
+      this.vfs.folders.push(folder);
+    }
+    folder.expanded = !folder.expanded;
+    this.saveProject();
+    return folder.expanded;
+  }
+
   renderTreeNode(node, container, depth) {
     const isRoot = depth === 0;
 
@@ -325,9 +460,13 @@ class Studio {
       row.style.paddingLeft = `${6 + depth * 11}px`;
       row.innerHTML = `${icon("chevron", { size: 14, className: "twisty" })}${icon("folder", { size: 15, className: "folder-icon" })}<span class="tree-label">${escapeHtml(node.name)}</span>`;
       row.addEventListener("click", () => {
-        node.expanded = node.expanded === false;
-        const folder = this.vfs.folders.find((item) => item.path === node.path);
-        if (folder) folder.expanded = node.expanded;
+        /*
+         * Item #15: o clique alterna o estado DA PASTA, guardado no VFS.
+         * O nó da árvore é recriado a cada render, então escrever no nó
+         * local não sobrevivia — bastava abrir um arquivo para a pasta
+         * reabrir sozinha.
+         */
+        this.toggleFolder(node.path);
         this.renderExplorer();
       });
       row.addEventListener("contextmenu", (event) => {
@@ -385,11 +524,29 @@ class Studio {
     importFileBtn?.addEventListener("click", () => fileImportInput?.click());
     libraryTemplateBtn?.addEventListener("click", () => this.createLibraryTemplate());
     dependencyBtn?.addEventListener("click", () => this.showDependencies());
-    filesToggle?.addEventListener("click", () => {
+    /*
+     * Item #17: o botão "Configurações" saiu da top bar. O acesso continua,
+     * mas no lugar onde a ação faz sentido: o menu do próprio projeto
+     * (botão direito na árvore ou no cabeçalho) e o menu do integrador.
+     */
+    filesToggle?.addEventListener("click", (event) => {
+      // Botão direito mantém a sobremenu; clique normal só abre/fecha.
+      if (event.altKey || event.button === 2) {
+        event.preventDefault();
+        this.openContextMenu(this.dom.fileContextMenu, event, this.projectMenuItems());
+        return;
+      }
       this.prefs.explorerOpen = !this.prefs.explorerOpen;
       this.dom.mainGrid?.classList.toggle("explorer-open", this.prefs.explorerOpen);
+      filesToggle.setAttribute("aria-expanded", String(this.prefs.explorerOpen));
       this.saveProject();
     });
+
+    this.dom.fileExplorer?.querySelector(".explorer-heading, .project-name")
+      ?.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        this.openContextMenu(this.dom.fileContextMenu, event, this.projectMenuItems());
+      });
 
     fileImportInput?.addEventListener("change", (event) => {
       const [file] = event.target.files ?? [];
@@ -603,19 +760,17 @@ class Studio {
   /* =========================== CATEGORIAS =========================== */
 
   /**
-   * Parte 11/20.3: divisão IDÊNTICA ao LEGO Education SPIKE.
-   * Parte 9.6: o código decide a ordem — as categorias presentes no programa
-   * aparecem primeiro; as demais continuam acessíveis logo abaixo.
+   * Categorias em ORDEM FIXA.
+   *
+   * Antes a coluna se reordenava sozinha conforme o código mudava, e o botão
+   * "Eventos" às vezes estava embaixo de "Sensores". Para quem tem 11 anos,
+   * um menu que se mex sozinho é um labirinto: a ordem é sempre a mesma,
+   * como no LEGO Education, e a lista rola quando precisa.
    */
   renderCategories() {
     const nav = this.dom.categories;
     if (!nav) return;
-    const priority = this.prioritizedCategories();
-
-    const ordered = [
-      ...CATEGORIES.filter((category) => priority.includes(category.id)),
-      ...CATEGORIES.filter((category) => !priority.includes(category.id)),
-    ];
+    const ordered = [...CATEGORIES, ...PROJECT_CATEGORIES];
 
     nav.replaceChildren(...ordered.map((category) => {
       const button = document.createElement("button");
@@ -623,9 +778,12 @@ class Studio {
       button.dataset.category = category.id;
       button.className = category.id === this.activeCategory ? "active" : "";
       button.style.setProperty("--color", category.color);
-      const count = blocksByCategory(category.id).length + this.dynamicCount(category.id);
-      button.innerHTML = `${categoryIcon(category.id, 15)}<span>${category.name}</span><i aria-hidden="true"></i><em class="cat-count">${count}</em>`;
-      button.title = `${category.name} — ${count} blocos`;
+      const count = this.blocksForCategory(category.id).length;
+      button.innerHTML =
+        `<span class="cat-icon" aria-hidden="true">${categoryIcon(category.id, 16)}</span>` +
+        `<span class="cat-name">${escapeHtml(category.name)}</span>` +
+        `<em class="cat-count">${count}</em>`;
+      button.title = `${category.name} — ${count} bloco${count === 1 ? "" : "s"}`;
       button.setAttribute("aria-pressed", String(category.id === this.activeCategory));
       button.addEventListener("click", () => {
         this.activeCategory = category.id;
@@ -641,39 +799,14 @@ class Studio {
     }));
   }
 
-  /** Quantos blocos dinâmicos uma categoria tem (Bibliotecas / Meus blocos). */
+  /** Quantos blocos dinâmicos uma categoria tem (funções do projeto). */
   dynamicCount(categoryId) {
     if (categoryId === "libraries") return librarySymbols(this.vfs?.files ?? []).length;
-    if (categoryId === "myblocks") return (this.activeFile?.symbols?.functions ?? []).length;
+    if (categoryId === "myblocks") {
+      return (this.activeFile?.symbols?.functions ?? []).filter((fn) => fn.name !== "main").length
+        + (this.vfs.project.customBlocks?.length ?? 0);
+    }
     return 0;
-  }
-
-  /** 9.6: descobre pelo código o que o usuário está usando agora. */
-  prioritizedCategories() {
-    const code = this.activeFile?.content ?? "";
-    const hits = new Map();
-    const bump = (id, weight = 1) => hits.set(id, (hits.get(id) ?? 0) + weight);
-
-    const scan = (pattern, id, weight = 1) => { if (pattern.test(code)) bump(id, weight); };
-
-    scan(/\bMotor\s*\(|\.run_angle\(|\.run_target\(|\.run\(|\.brake\(|\.hold\(/, "motors", 3);
-    scan(/\bDriveBase\s*\(|\.straight\(|\.turn\(|\.curve\(|\.drive\(/, "movement", 3);
-    scan(/ColorSensor|UltrasonicSensor|ForceSensor|\.color\(|\.distance\(|\.pressed\(|\.imu\./, "sensors", 2);
-    scan(/speaker\.|\.beep\(|play_notes/, "sound", 2);
-    scan(/display\.|light\.|\bIcon\./, "light", 2);
-    scan(/\bwait\s*\(|\bwhile\b|\bfor\b|\bif\b|StopWatch/, "control", 2);
-    scan(/PrimeHub|InventorHub|TechnicHub|\bhub\./, "hub", 2);
-    scan(/^\s*def\s+\w+/m, "myblocks", 2);
-    scan(/^\s*\w+\s*=|\bprint\(/m, "variables", 1);
-    scan(/buttons\.pressed|mailbox|quando/i, "events", 2);
-    scan(/[+\-*/%]|randint|\babs\(|\bround\(|\blen\(/, "operators", 1);
-
-    if (librarySymbols(this.vfs?.files ?? []).length) bump("libraries", 3);
-
-    return [...hits.entries()]
-      .filter(([, weight]) => weight > 0)
-      .sort((a, b) => b[1] - a[1])
-      .map(([id]) => id);
   }
 
   /* =========================== BIBLIOTECA =========================== */
@@ -702,22 +835,26 @@ class Studio {
     list.scrollTop = 0;
   }
 
-  /** Blocos estáticos + dinâmicos (Bibliotecas / Meus blocos). */
+  /** Blocos estáticos + dinâmicos (funções do projeto). */
   blocksForCategory(categoryId) {
     const staticBlocks = blocksByCategory(categoryId);
     if (categoryId === "libraries") {
+      // Funções definidas em OUTROS arquivos do projeto viram blocos.
       const dynamic = librarySymbols(this.vfs?.files ?? []).map((symbol) => ({
-        blockId: "library_call",
+        blockId: "custom_call",
         dynamic: true,
         symbol,
       }));
       return [...staticBlocks, ...dynamic];
     }
     if (categoryId === "myblocks") {
-      const dynamic = (this.activeFile?.symbols?.functions ?? [])
-        .filter((fn) => fn.name !== "main")
-        .map((fn) => ({ blockId: "myblock_call", dynamic: true, symbol: fn }));
-      return [...staticBlocks, ...dynamic];
+      const own = (this.activeFile?.symbols?.functions ?? [])
+        .filter((fn) => fn.name !== "main" && !String(fn.name).startsWith("_"))
+        .map((fn) => ({ blockId: "custom_call", dynamic: true, symbol: { ...fn, module: this.activeFile.module_name } }));
+      const custom = (this.vfs.project.customBlocks ?? []).map((definition) => ({
+        blockId: "custom_call", dynamic: true, symbol: definition,
+      }));
+      return [...staticBlocks, ...own, ...custom];
     }
     return staticBlocks;
   }
@@ -725,9 +862,9 @@ class Studio {
   /**
    * Bloco da paleta.
    *
-   * PEDIDO DO USUÁRIO: os blocos da biblioteca têm os mesmos nomes do LEGO
-   * Education, mas ali eles NÃO são editáveis — são modelos. A edição acontece
-   * depois de inserir no programa (Parte 13).
+   * PEDIDO DO USUÁRIO: UM CLIQUE já insere o bloco no programa. Arrastar
+   * continua funcionando como alternativa, mas ninguém é obrigado a
+   * descubrir drag-and-drop para usar o editor.
    */
   buildPaletteNode(entry) {
     if (entry.dynamic) return this.buildDynamicPaletteNode(entry);
@@ -735,6 +872,7 @@ class Studio {
     if (!spec) return null;
 
     const defaults = blockDefaults(spec);
+    const doc = blockDoc(spec);
     const button = document.createElement("button");
     button.type = "button";
     button.className = `library-block shape-${spec.shape}`;
@@ -742,10 +880,12 @@ class Studio {
     button.dataset.category = spec.category;
     button.style.setProperty("--color", CATEGORY_COLOR[spec.category] ?? "#42546a");
     button.draggable = true;
-    button.title = `${spec.doc}\n\nArraste para a área de blocos, ou dê dois cliques para inserir no fim do programa.`;
-    button.setAttribute("aria-label", `${staticLabel(spec, defaults)}. ${spec.doc}`);
-    // Nenhum cadeado, nenhum aviso de "sem equivalente" (B03/B04/N03)
-    button.innerHTML = `<span class="lib-label">${escapeHtml(staticLabel(spec, defaults))}</span>`;
+    button.title = `${doc}\n\nClique para inserir no programa, ou arraste até a área de blocos.`;
+    button.setAttribute("aria-label", `${staticLabel(spec, defaults)}. ${doc}`);
+    // Curto visível, completo no hover — o mesmo par de classes do renderer.
+    button.innerHTML =
+      `<span class="lib-label-short">${escapeHtml(staticLabel(spec, defaults, { compact: true }))}</span>` +
+      `<span class="lib-label-full">${escapeHtml(staticLabel(spec, defaults))}</span>`;
 
     button.addEventListener("dragstart", (event) => {
       this.dragSchema = spec.id;
@@ -755,28 +895,40 @@ class Studio {
       button.classList.add("dragging");
     });
     button.addEventListener("dragend", () => { this.dragSchema = null; button.classList.remove("dragging"); });
-    button.addEventListener("dblclick", () => this.insertFromPalette(spec.id));
-    button.addEventListener("click", () => sound.play("click"));
+    // UM CLIQUE INSERE. Duplo clique também (não atrapalha nada).
+    button.addEventListener("click", () => this.insertFromPalette(spec.id));
     return button;
   }
 
-  /** 11.16: categoria dinâmica gerada a partir dos símbolos do VFS. */
+  /**
+   * Bloco gerado a partir de uma função Python do projeto.
+   *
+   * Não existe botão fixo "Gyro Move": se a equipe escreveu
+   * `def gyro_move(distancia, velocidade)` em movimento.py, o bloco
+   * "Mover com giroscópio" aparece aqui, com um campo por parâmetro, e gera
+   * o import e a chamada reais.
+   */
   buildDynamicPaletteNode(entry) {
-    const symbol = entry.symbol;
-    const isLibrary = entry.blockId === "library_call";
+    const symbol = entry.symbol ?? {};
+    const label = symbol.label || ptFunctionLabel(symbol.name);
+    const args = (symbol.args ?? []).join(", ");
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `library-block shape-stack ${isLibrary ? "from-library" : "from-myblocks"}`;
+    button.className = "library-block shape-stack from-library";
     button.dataset.schema = entry.blockId;
     button.dataset.function = symbol.name;
     button.dataset.module = symbol.module ?? "";
-    button.style.setProperty("--color", CATEGORY_COLOR[isLibrary ? "libraries" : "myblocks"]);
+    button.style.setProperty("--color", CATEGORY_COLOR.libraries);
     button.draggable = true;
-    const args = (symbol.args ?? []).join(", ");
-    button.title = isLibrary
-      ? `Função de ${symbol.module ?? "biblioteca"}\n\ndef ${symbol.name}(${args})\n\nArraste para usar. O import é adicionado automaticamente.`
-      : `Sua função\n\ndef ${symbol.name}(${args})`;
-    button.innerHTML = `<span class="lib-label">${escapeHtml(symbol.name)}${args ? ` <em class="lib-args">(${escapeHtml(args)})</em>` : ""}</span>`;
+    button.title =
+      `Função Python da equipe: def ${symbol.name}(${args})\n` +
+      `Módulo: ${symbol.module ?? "este arquivo"}\n\n` +
+      `Clique para inserir. O import "from ${symbol.module ?? "modulo"} import ${symbol.name}" é escrito automaticamente.`;
+    button.setAttribute("aria-label", `${label}. Função ${symbol.name}.`);
+    // curto: "minha_funcao(a, b)";  completo no hover: o def e o import
+    button.innerHTML =
+      `<span class="lib-label-short">${escapeHtml(label)}${args ? ` <em class="lib-args">(${escapeHtml(args)})</em>` : ""}</span>` +
+      `<span class="lib-label-full">def ${escapeHtml(symbol.name)}(${escapeHtml(args)}) · módulo ${escapeHtml(symbol.module ?? "aqui")}</span>`;
 
     button.addEventListener("dragstart", (event) => {
       this.dragSchema = entry.blockId;
@@ -787,34 +939,114 @@ class Studio {
       if (event.dataTransfer) event.dataTransfer.effectAllowed = "copy";
     });
     button.addEventListener("dragend", () => { this.dragSchema = null; this.dragSymbol = null; });
-    button.addEventListener("dblclick", () => this.insertDynamic(entry.blockId, symbol));
+    button.addEventListener("click", () => this.insertDynamic(entry.blockId, symbol));
     return button;
   }
 
-  insertFromPalette(schema) {
+  /**
+   * Um clique num bloco da biblioteca o insere no programa.
+   *
+   * Sem arrasto. A criança clica e o bloco aparece — arrastar continua
+   * disponível, mas é opcional e serve para escolher ONDE encaixar.
+   *
+   * @param {string} schema
+   * @param {{parentId?:string|null}} options `parentId` quando o bloco foi
+   *        solto dentro do encaixe de outro (bloco em C / chapéu do programa).
+   */
+  insertFromPalette(schema, options = {}) {
     const spec = BLOCK_BY_ID.get(schema);
     if (!spec) return;
-    const block = makeBlockInstance(spec, blockDefaults(spec));
-    this.sync.insertBlockIntoCode(block);
+    const defaults = blockDefaults(spec);
+    /*
+     * Porta livre para um motor novo.
+     *
+     * Sem isto, clicar duas vezes em "motor na porta" criava DUAS linhas
+     * `motor_a = Motor(Port.A, ...)` — idênticas, e a segunda sobrescreve a
+     * primeira quando o programa roda. A duplicata que a criança viu ao
+     * inserir blocos vinha daqui, e não de um defeito na reconciliação.
+     *
+     * A porta sugerida é a primeira que o arquivo ainda não usa. Se todas
+     * estiverem ocupadas, mantemos a padrão: é melhor o robô avisar do que
+     * a criança perder o clique.
+     */
+    if (schema === "motor_setup") {
+      const emUso = new Set(
+        (this.sync?.blocks ?? []).map((b) => b.params?.port).filter(Boolean),
+      );
+      const livre = ["A", "B", "C", "D", "E", "F"].find((porta) => !emUso.has(porta));
+      if (livre) defaults.port = livre;
+    }
+    const block = makeBlockInstance(spec, defaults);
+    // Bloco de evento (chapéu) sempre entra no TOPO do programa: um
+    // "quando o programa iniciar" embaixo de outros blocos nunca dispara.
+    const placement = spec.shape === "hat" || spec.category === "events" ? "top" : "bottom";
+    this.sync.insertBlockIntoCode(block, placement, options.parentId ?? null);
     this.editor?.setValue(this.sync.code, { silent: true });
     this.persistActiveFile();
     sound.play("snap");
-    this.terminal.info(`Bloco inserido: ${staticLabel(spec, block.params)}`);
+    const where = options.parentId ? "dentro do bloco solto" : placement === "top" ? "no início" : "no fim";
+    this.terminal.info(`Bloco inserido ${where}: ${staticLabel(spec, block.params)}`);
   }
 
-  insertDynamic(blockId, symbol) {
+  insertDynamic(blockId, symbol, parentId = null) {
     const spec = BLOCK_BY_ID.get(blockId);
     if (!spec) return;
-    const params = { name: symbol.name, args: (symbol.args ?? []).join(", "), module: symbol.module ?? "" };
-    const block = makeBlockInstance(spec, { ...blockDefaults(spec), ...params });
-    this.sync.insertBlockIntoCode(block);
+    const definition = symbolForBlock(symbol);
+    const block = makeBlockInstance(spec, {
+      ...blockDefaults(spec),
+      label: definition.label,
+      function: definition.name,
+      module: definition.module,
+      fields: definition.fields,
+    });
+    this.sync.insertBlockIntoCode(block, "bottom", parentId);
     this.editor?.setValue(this.sync.code, { silent: true });
     this.persistActiveFile();
     sound.play("snap");
-    if (symbol.module) {
-      this.terminal.success(`${symbol.module}.py encontrado`);
-      this.terminal.info(`import adicionado automaticamente: from ${symbol.module} import ${symbol.name}`);
+    this.terminal.info(`Bloco inserido: ${definition.label}(${definition.fields.map((f) => f.name).join(", ")})`);
+    if (definition.module && definition.module !== this.activeFile?.module_name) {
+      this.terminal.success(`${definition.module}.py encontrado em ${definition.path ?? "projeto"}.`);
+      this.terminal.info(`import escrito automaticamente: from ${definition.module} import ${definition.name}`);
     }
+  }
+
+  /**
+   * "Criar bloco a partir de função Python".
+   * A equipe escreve `def aproximar_anexo(velocidade, distancia)` e escolhe
+   * o nome visual e a categoria. O bloco fica salvo no projeto e passa a
+   * aparecer na paleta junto das demais funções.
+   */
+  createBlockFromFunction(fileId, functionName) {
+    const file = this.vfs.byId(fileId) ?? this.activeFile;
+    const fn = (file?.symbols?.functions ?? []).find((item) => item.name === functionName);
+    if (!fn) { this.toast("Função não encontrada neste arquivo.", "warning"); return; }
+
+    const moduleName = file.module_name;
+    this.openDialog({
+      title: "Criar bloco a partir da função",
+      text: `def ${fn.name}(${(fn.args ?? []).join(", ")})\n\nEscolha como o bloco vai aparecer. O nome no Python continua ${fn.name}.`,
+      fieldLabel: "Nome do bloco (em português)",
+      value: ptFunctionLabel(fn.name),
+      onConfirm: ({ value }) => {
+        const list = (this.vfs.project.customBlocks ??= []);
+        const existing = list.find((item) => item.name === fn.name && item.module === moduleName);
+        const definition = {
+          name: fn.name,
+          module: moduleName,
+          path: file.path,
+          label: String(value || "").trim() || ptFunctionLabel(fn.name),
+          args: fn.args ?? [],
+        };
+        if (existing) Object.assign(existing, definition);
+        else list.push(definition);
+        this.renderCategories();
+        this.renderLibrary();
+        this.saveProject();
+        this.toast(`Bloco “${definition.label}” criado.`, "success");
+        this.terminal.success(`Bloco “${definition.label}” criado a partir de ${moduleName}.${fn.name}().`);
+        sound.play("snap");
+      },
+    });
   }
 
   /**
@@ -871,18 +1103,132 @@ class Studio {
       onRemove: (blockId) => this.removeBlockById(blockId),
     });
 
-    document.querySelectorAll(".workspace-controls button").forEach((button) => {
-      button.addEventListener("click", () => {
-        const action = button.dataset.act;
-        if (action === "zoomIn") this.workspace.zoomBy(0.15);
-        if (action === "zoomOut") this.workspace.zoomBy(-0.15);
-        if (action === "fit") this.workspace.fitToContent();
-        if (action === "undo") this.undo();
-        if (action === "redo") this.redo();
-        if (action === "delete") this.removeBlockById(this.workspace.selectedId);
-        sound.play("click");
-      });
+    // Zoom, tela cheia, desfazer e refazer saíram da barra flutuante: eles
+    // continuam funcionando pelos atalhos (Ctrl+Z, Ctrl+Shift+Z, Ctrl +/-,
+    // Ctrl+0) e pelo menu do botão direito. Menos botões na frente da
+    // criança, mesmas capacidades.
+  }
+
+  /**
+   * PAINEL DE CÓDIGO — expansível, retrátil e redimensionável.
+   * O divisor entre a área de blocos e o código é arrastável; há também um
+   * botão discreto (< / >) que recolhe o painel e devolve a largura para os
+   * blocos. A preferência fica salva.
+   */
+  bindCodePanelResize() {
+    const grid = this.dom.mainGrid;
+    const splitter = this.dom.codeSplitter;
+    const toggle = this.dom.codePanelToggle;
+    if (!grid) return;
+
+    const min = 300;
+
+    // A largura vai numa PROPRIEDADE, não em `style.setProperty` direto.
+    // Motivo: `apply()` escreve o mesmo nome que a regra `.code-collapsed`
+    // usa, e um estilo embutido sempre ganha da folha de estilo — ou seja,
+    // recolher o painel não faria nada. Aqui a variável vive no elemento e a
+    // regra da classe continua soberana.
+    const writeWidth = (width) => grid.style.setProperty("--code-width", `${width}px`);
+
+    const apply = (width) => {
+      const available = grid.clientWidth || window.innerWidth;
+      const clamped = Math.max(min, Math.min(Math.round(width), Math.round(available * 0.72)));
+      this.prefs.codeWidth = clamped;
+      writeWidth(clamped);
+    };
+
+    /** Recolhe: a largura vai a zero no MESMO lugar, sem depender de CSS. */
+    const setCollapsed = (collapsed) => {
+      this.prefs.codeCollapsed = Boolean(collapsed);
+      grid.classList.toggle("code-collapsed", this.prefs.codeCollapsed);
+      if (this.prefs.codeCollapsed) writeWidth(0);
+      else apply(this.prefs.codeWidth || Math.round((grid.clientWidth || window.innerWidth) * 0.42));
+    };
+
+    if (this.prefs.codeWidth) writeWidth(this.prefs.codeWidth);
+    grid.classList.toggle("code-collapsed", Boolean(this.prefs.codeCollapsed));
+    if (this.prefs.codeCollapsed) writeWidth(0);
+    this.updateCodePanelToggle();
+
+    toggle?.addEventListener("click", () => {
+      setCollapsed(!this.prefs.codeCollapsed);
+      toggle.setAttribute("aria-expanded", String(!this.prefs.codeCollapsed));
+      this.updateCodePanelToggle();
+      sound.play("click");
+      // O editor tem que remedir a fonte depois que a coluna mudou de tamanho.
+      requestAnimationFrame(() => this.editor?.refresh());
+      this.saveProject();
     });
+
+    if (!splitter) return;
+
+    // Teclado: setas movem em passos de 24px, Page Up/Down em 80px, Home/End
+    // vão para o mínimo/máximo. O divisor precisa funcionar sem mouse.
+    splitter.addEventListener("keydown", (event) => {
+      const step = event.key === "PageUp" || event.key === "PageDown" ? 80 : 24;
+      const current = this.prefs.codeWidth || grid.clientWidth * 0.42;
+      const map = {
+        ArrowLeft: current + step,
+        ArrowRight: current - step,
+        PageUp: current + step,
+        PageDown: current - step,
+        Home: min,
+        End: Math.round((grid.clientWidth || window.innerWidth) * 0.72),
+      };
+      if (!(event.key in map)) return;
+      event.preventDefault();
+      setCollapsed(false);
+      apply(map[event.key]);
+      this.saveProject();
+      requestAnimationFrame(() => this.editor?.refresh());
+    });
+
+    splitter.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      splitter.setPointerCapture?.(event.pointerId);
+      document.body.classList.add("resizing-code");
+      const startX = event.clientX;
+      const startWidth = this.prefs.codeWidth || grid.clientWidth * 0.42;
+      this.prefs.codeCollapsed = false;
+      grid.classList.remove("code-collapsed");
+      apply(startWidth);
+      this.updateCodePanelToggle();
+
+      const move = (moveEvent) => apply(startWidth - (moveEvent.clientX - startX));
+      const stop = () => {
+        document.body.classList.remove("resizing-code");
+        splitter.releasePointerCapture?.(event.pointerId);
+        splitter.removeEventListener("pointermove", move);
+        splitter.removeEventListener("pointerup", stop);
+        splitter.removeEventListener("pointercancel", stop);
+        this.saveProject();
+        requestAnimationFrame(() => this.editor?.refresh());
+      };
+      splitter.addEventListener("pointermove", move);
+      splitter.addEventListener("pointerup", stop);
+      splitter.addEventListener("pointercancel", stop);
+    });
+
+    // Duplo clique no divisor volta para um tamanho confortável
+    splitter.addEventListener("dblclick", () => {
+      setCollapsed(false);
+      apply((grid.clientWidth || window.innerWidth) * 0.42);
+      this.saveProject();
+    });
+  }
+
+  updateCodePanelToggle() {
+    const toggle = this.dom.codePanelToggle;
+    if (!toggle) return;
+    const collapsed = Boolean(this.prefs.codeCollapsed);
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+    toggle.title = collapsed
+      ? "Mostrar o código Python (atalho: Ctrl+\\)"
+      : "Esconder o código Python e deixar mais espaço para os blocos (atalho: Ctrl+\\)";
+    toggle.querySelector(".panel-icon")?.replaceChildren();
+    toggle.innerHTML = collapsed
+      ? '<svg class="panel-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg><span>Python</span>'
+      : '<svg class="panel-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg><span>Python</span>';
   }
 
   renderBlocks() {
@@ -892,6 +1238,16 @@ class Studio {
   /** Editou um parâmetro do bloco -> patch cirúrgico no Python (Parte 13.4). */
   onBlockEdited(block, meta) {
     if (!block || this.applyingFromBlocks) return;
+    /*
+      Operação SÓ VISUAL (item 13): expandir/retrair um bloco.
+
+      Ela muda como o bloco é desenhado, nunca o que ele significa. Sem
+      esta guarda, `patchBlock` reescrevia a linha a partir do bloco
+      serializado — que é mais verboso que a linha original — e cada clique
+      na seta acrescentava texto ao arquivo.
+    */
+    if (meta?.uiOnly) return;
+
     this.applyingFromBlocks = true;
     try {
       const result = this.sync.applyBlockEdit(block);
@@ -899,7 +1255,11 @@ class Studio {
         this.editor?.setValue(this.sync.code, { silent: true });
         this.history.push({ fileId: this.activeFileId, code: this.sync.code, caret: this.editor?.caret ?? 0, label: "parâmetro do bloco" });
         this.persistActiveFile();
-        if (meta?.commit) this.terminal.info(`Python atualizado a partir do bloco (linha ${block.source?.startLine ?? "?"}).`);
+        if (meta?.commit) {
+          this.terminal.info(`Python atualizado a partir do bloco (linha ${block.source?.startLine ?? "?"}).`);
+          // O usuário TERMINOU de editar o campo (Enter/blur): aqui sim grava.
+          this.saveIfDirty("parâmetro do bloco confirmado");
+        }
       }
     } finally {
       this.applyingFromBlocks = false;
@@ -919,11 +1279,11 @@ class Studio {
     if (options.fromPalette && BLOCK_BY_ID.has(schema)) {
       const symbolName = event?.dataTransfer?.getData("text/garca-function");
       const moduleName = event?.dataTransfer?.getData("text/garca-module");
-      if ((schema === "library_call" || schema === "myblock_call") && symbolName) {
-        this.insertDynamic(schema, { name: symbolName, module: moduleName, args: this.lookupArgs(symbolName, moduleName) });
+      if (schema === "custom_call" && symbolName) {
+        this.insertDynamic(schema, this.lookupSymbol(symbolName, moduleName), options.parentId);
         return;
       }
-      this.insertFromPalette(schema);
+      this.insertFromPalette(schema, { parentId: options.parentId });
       return;
     }
     if (!options.fromPalette) {
@@ -932,11 +1292,18 @@ class Studio {
     }
   }
 
-  lookupArgs(functionName, moduleName) {
-    const library = librarySymbols(this.vfs?.files ?? []).find((item) => item.name === functionName && (!moduleName || item.module === moduleName));
-    if (library) return library.args ?? [];
+  /** Procura os dados (parâmetros) de uma função Python do projeto. */
+  lookupSymbol(functionName, moduleName) {
+    const custom = (this.vfs.project.customBlocks ?? []).find(
+      (item) => item.name === functionName && (!moduleName || item.module === moduleName),
+    );
+    if (custom) return custom;
+    const library = librarySymbols(this.vfs?.files ?? []).find(
+      (item) => item.name === functionName && (!moduleName || item.module === moduleName),
+    );
+    if (library) return library;
     const local = (this.activeFile?.symbols?.functions ?? []).find((fn) => fn.name === functionName);
-    return local?.args ?? [];
+    return local ? { ...local, module: this.activeFile?.module_name } : { name: functionName, module: moduleName, args: [] };
   }
 
   removeBlockById(blockId) {
@@ -963,6 +1330,12 @@ class Studio {
     if (file && this.workspace) file.view = { ...this.workspace.view };
   }
 
+  /**
+   * Mantém o VFS em dia e MARCA o projeto como alterado.
+   * NÃO grava no navegador aqui: a gravação acontece quando a edição acaba
+   * (bindSmartSave). Gravar a cada tecla enchia o armazenamento e fazia o
+   * programa piscar.
+   */
   persistActiveFile() {
     const file = this.activeFile;
     if (!file) return;
@@ -970,7 +1343,7 @@ class Studio {
     file.blocksFromCode = false;
     this.vfs.setContent(file.file_id, this.sync.code);
     file.blocks = this.sync.blocks;
-    this.saveProject();
+    this.markDirty();
     this.renderExplorer();
   }
 
@@ -1064,7 +1437,9 @@ class Studio {
     this.updateSyncIndicator(payload);
     this.renderTerminalProblems(payload.diagnostics ?? []);
     this.persistActiveFile();
-    this.renderCategories();
+    // A coluna de categorias NAO e redesenhada aqui: só as contagens das
+    // funções do projeto mudam, e redesenhar a cada tecla fazia o
+    // menu pular e perder a rolagem.
   }
 
   updateSyncIndicator(payload) {
@@ -1126,9 +1501,11 @@ class Studio {
       profileSummary: this.dom.profileSummary,
       ranking: this.dom.versionRanking,
       closeProfile: this.dom.closeProfile,
+      statusBadge: this.dom.githubStatus,
+      lastCommit: this.dom.lastCommit,
       getFiles: () => this.vfs.files,
       getActiveOutput: () => this.activeOutputNumber,
-      onToast: (text, level) => this.toast(text, level),
+      onToast: (text, level, duration) => this.toast(text, level, duration),
       onLog: (text, level) => this.terminal?.[level]?.(text) ?? this.terminal?.info(text),
     });
     this.github.setOpen(Boolean(this.prefs.githubOpen));
@@ -1145,20 +1522,31 @@ class Studio {
       DISCONNECTED: "HUB desconectado",
       SEARCHING: "Procurando HUB…",
       FOUND: "HUB encontrado",
+      PAREANDO: "Pareando…",
       CONNECTING: "Conectando…",
       CONNECTED: "HUB conectado",
       READY: "HUB pronto",
       RUNNING: "Programa em execução",
       UPLOADING: "Enviando programa…",
       FAILED: "Falha na conexão",
+      UNSUPPORTED: "Navegador sem Bluetooth",
     };
     const state = this.dom.hubState;
     if (state) state.textContent = labels[this.hub.state] ?? this.hub.state;
+
+    /*
+     * Item #19: cartão minimalista. O ponto de estado é o canal principal e
+     * o subtítulo (modelo + firmware) só aparece quando existe HUB de
+     * verdade — "SPIKE Prime · Pybricks" ficava escrito mesmo com o HUB
+     * desligado a três metros de distância, o que sugeria conexão.
+     */
+    this.dom.hubDot?.setAttribute("data-state", this.hub.state);
     const model = this.dom.hubModel;
     if (model) {
-      model.textContent = this.hub.state === "DISCONNECTED" || this.hub.state === "FAILED"
-        ? "SPIKE Prime · Pybricks"
-        : [this.hub.model, this.hub.firmware].filter(Boolean).join(" · ") || "SPIKE Prime · Pybricks";
+      const connected = ["CONNECTED", "READY", "RUNNING", "UPLOADING"].includes(this.hub.state);
+      model.textContent = connected
+        ? [this.hub.model, this.hub.firmware].filter(Boolean).join(" · ") || this.hub.model || "HUB"
+        : "";
     }
     // N13: a bateria aparece SOMENTE no cartão do HUB
     const battery = this.dom.hubBattery;
@@ -1185,27 +1573,72 @@ class Studio {
     this.dom.stopBtn?.addEventListener("click", () => this.stopOnHub());
     this.dom.downloadBtn?.addEventListener("click", () => this.downloadToHub());
     this.dom.newBtn?.addEventListener("click", () => this.addOutput());
-    this.dom.settingsBtn?.addEventListener("click", () => this.togglePreferences(true));
     this.dom.githubToggle?.addEventListener("click", () => { this.prefs.githubOpen = this.github.isOpen; this.saveProject(); });
   }
 
+  /**
+   * CONEXÃO REAL COM O HUB (Web Bluetooth).
+   *
+   * Nada é simulado (N21): se não houver dispositivo, ou o usuário cancelar,
+   * ou o serviço GATT não existir, o estado mostra exatamente o que houve.
+   *
+   * Duas tentativas, nesta ordem:
+   *   1. filtrando pelo serviço Pybricks — encontra o HUB rápido;
+   *   2. mostrando TODOS os dispositivos — alguns firmwares não anunciam o
+   *      serviço no pacote de publicidade, e o filtro esconde o HUB.
+   */
   async connectHub() {
     if (!navigator.bluetooth) {
-      this.terminal.error("Este navegador não tem Web Bluetooth. Use Chrome ou Edge em HTTPS ou localhost.");
+      this.setHubState("UNSUPPORTED");
+      this.terminal.error("Este navegador não tem Web Bluetooth. Use Chrome ou Edge, em https:// ou em localhost.");
       this.toast("Web Bluetooth indisponível neste navegador.", "error");
       return;
     }
-    this.setHubState("SEARCHING");
-    this.terminal.info("Procurando HUB SPIKE Prime…");
+    if (!window.isSecureContext) {
+      this.setHubState("UNSUPPORTED");
+      this.terminal.error("Web Bluetooth exige uma página segura: https:// ou http://localhost.");
+      return;
+    }
+
+    this.terminal.info("Ligue o HUB, segure o botão central por 3 segundos até piscar em azul e clique em Conectar HUB.");
+    let device = null;
+
+    // 1) com filtro de serviço
     try {
-      const device = await navigator.bluetooth.requestDevice({
+      this.setHubState("SEARCHING");
+      device = await navigator.bluetooth.requestDevice({
         filters: [{ services: [PYBRICKS_SERVICE] }],
         optionalServices: [PYBRICKS_SERVICE],
       });
+    } catch (error) {
+      if (isUserCancel(error)) {
+        this.setHubState("DISCONNECTED");
+        this.terminal.info("Busca cancelada.");
+        return;
+      }
+      this.terminal.warning(`Nenhum HUB anunciado com o serviço Pybricks (${error?.name ?? error.message}). Abrindo a lista de dispositivos…`);
+    }
+
+    // 2) sem filtro — alguns firmwares não anunciam o serviço
+    if (!device) {
+      try {
+        this.setHubState("SEARCHING");
+        device = await navigator.bluetooth.requestDevice({
+          acceptAllDevices: true,
+          optionalServices: [PYBRICKS_SERVICE],
+        });
+      } catch (error) {
+        this.setHubState(isUserCancel(error) ? "DISCONNECTED" : "FAILED");
+        if (!isUserCancel(error)) this.terminal.error(`Falha na busca: ${error?.message ?? error}`);
+        return;
+      }
+    }
+
+    try {
       this.hub.device = device;
-      this.hub.model = device.name || "SPIKE Prime";
+      this.hub.model = device.name || "HUB Pybricks";
       this.setHubState("FOUND");
-      this.terminal.success(`Encontrado: ${this.hub.model}`);
+      this.terminal.success(`Dispositivo encontrado: ${this.hub.model}`);
 
       this.setHubState("CONNECTING");
       device.addEventListener("gattserverdisconnected", () => {
@@ -1221,13 +1654,20 @@ class Studio {
       await this.hub.characteristic.startNotifications();
       this.hub.characteristic.addEventListener("characteristicvaluechanged", (event) => this.onHubEvent(event));
 
+      // Só aqui — depois do GATT realmente aberto — o estado vira "pronto".
       this.setHubState("READY");
       this.terminal.success(`Conectado ao ${this.hub.model}${this.hub.firmware ? ` (firmware ${this.hub.firmware})` : ""}`);
+      this.toast("HUB conectado.", "success");
       sound.play("hubConnected");
     } catch (error) {
-      // N21: NUNCA simular conexão bem-sucedida
-      this.setHubState(error?.message?.includes("User cancelled") ? "DISCONNECTED" : "FAILED");
-      this.terminal.error(`Falha na conexão: ${error?.message ?? error}`);
+      this.setHubState("FAILED");
+      const detail = error?.message ?? String(error);
+      this.terminal.error(`Falha na conexão: ${detail}`);
+      this.terminal.info(
+        /NotFoundError|not found/i.test(detail)
+          ? "Esse dispositivo não expõe o serviço Pybricks. Verifique se ele é um HUB com firmware Pybricks (SPIKE Prime, SPIKE Essential ou Technic)."
+          : "Confira se o HUB está perto e ligado, e tente de novo.",
+      );
       sound.play("error");
     }
   }
@@ -1468,7 +1908,18 @@ class Studio {
 
       if (mod && key === "z" && !event.shiftKey) { event.preventDefault(); this.undo(); return; }
       if (mod && (key === "y" || (key === "z" && event.shiftKey))) { event.preventDefault(); this.redo(); return; }
-      if (mod && key === "s") { event.preventDefault(); this.saveProject(); this.flashSaved(); this.toast("Rascunho salvo.", "success"); return; }
+      if (mod && key === "s") {
+        event.preventDefault();
+        if (this.dirty) { this.saveProject(); this.flashSaved(); this.toast("Arquivo salvo neste navegador.", "success"); }
+        else this.toast("Nada novo para salvar.", "info");
+        return;
+      }
+      // Recolhe/expande o painel de código
+      if (mod && (event.key === "\\" || event.code === "Backslash")) {
+        event.preventDefault();
+        this.dom.codePanelToggle?.click();
+        return;
+      }
       if (mod && key === "d") { event.preventDefault(); this.duplicateSelected(); return; }
       if (mod && key === "f") { /* busca nativa do navegador — não bloqueia */ return; }
       if (mod && (key === "=" || key === "+")) { event.preventDefault(); this.workspace?.zoomBy(0.15); return; }
@@ -1704,13 +2155,13 @@ class Studio {
 
   /* ============================== TOAST ============================== */
 
-  toast(text, level = "info") {
+  toast(text, level = "info", duration = 2500) {
     const node = this.dom.toast;
     if (!node) return;
     node.textContent = text;
     node.className = `toast show ${level}`;
     clearTimeout(this.toastTimer);
-    this.toastTimer = setTimeout(() => { node.classList.remove("show"); }, 2500);
+    this.toastTimer = setTimeout(() => { node.classList.remove("show"); }, duration);
   }
 }
 
@@ -1778,6 +2229,32 @@ function folderMenuItems(app, node) {
       label: "Exportar pasta", icon: "download",
       action: () => app.vfs.files.filter((file) => file.path.startsWith(`${node.path}/`)).forEach((file) => downloadText(file.name, file.content)),
     },
+  ];
+}
+
+/**
+ * Menu do PROJETO (item #17).
+ *
+ * É aqui que as Configurações foram morar depois de saírem da top bar: a
+ * ação é rara e pertence ao projeto, não à barra principal. O restante do
+ * menu é o que se faz com um projeto inteiro.
+ */
+function projectMenuItems(app) {
+  return [
+    { label: "Novo arquivo", icon: "fileCode", action: () => app.promptNewFile() },
+    { label: "Nova pasta", icon: "folder", action: () => app.promptNewFolder() },
+    { label: "Importar .py", icon: "download", action: () => app.dom.fileImportInput?.click() },
+    { separator: true },
+    { label: "Configurações", icon: "settings", action: () => app.togglePreferences(true) },
+    { label: "Ajuda rápida", icon: "info", action: () => app.openDialog({
+      title: "Como usar",
+      text: "1. Escolha uma categoria e clique num bloco — ele entra no programa.\n" +
+            "2. Arraste o valor dentro do bloco para mudar (roda 62,4 mm, eixos 48 mm).\n" +
+            "3. O Python é escrito ao lado, sozinho. Editar o Python também atualiza os blocos.\n" +
+            "4. Ctrl+S salva neste navegador. Atualizar código envia para o GitHub.",
+      confirmLabel: "Entendi",
+      onConfirm: () => {},
+    }) },
   ];
 }
 
@@ -1856,6 +2333,86 @@ function makeBlockInstance(spec, params) {
 }
 
 const outputNumber = (path) => Number(/saida_(\d+)/.exec(path ?? "")?.[1] ?? 0);
+
+/**
+ * Converte os dados de uma função Python num bloco de função do projeto.
+ *
+ *   def gyro_move(distancia, velocidade=300)
+ *     -> fields: [ {name:"distancia", unit:"mm", type:"number"},
+ *                  {name:"velocidade", unit:"mm/s", type:"number"} ]
+ *
+ * Um campo por parâmetro, com o valor padrão quando existe. O NOME TÉCNICO
+ * (`gyro_move`) continua existindo no Python gerado — o que muda é o que a
+ * criança VÊ: o rótulo em português, com o valor dentro da frase.
+ */
+export function symbolForBlock(symbol) {
+  const name = String(symbol?.name ?? "funcao");
+  const args = symbol?.args ?? [];
+  const defaults = symbol?.defaults ?? [];
+  return {
+    name,
+    module: symbol?.module ?? "",
+    path: symbol?.path ?? "",
+    label: symbol?.label || ptFunctionLabel(name),
+    fields: args.map((arg, index) => {
+      const shape = guessParam(arg, defaults[index]);
+      return {
+        name: arg,
+        label: shape.label,
+        type: shape.type,
+        unit: shape.unit,
+        value: defaults[index] !== undefined && defaults[index] !== null ? String(defaults[index]) : shape.value,
+        default: defaults[index] ?? shape.value,
+      };
+    }),
+  };
+}
+
+/**
+ * Infere o TIPO e a UNIDADE de um parâmetro a partir do nome e do valor
+ * padrão. É heurística declarada, não adivinhação silenciosa: a criança vê
+ * o campo pronto e pode trocar por qualquer coisa a qualquer momento.
+ *
+ * O objetivo é concreto: evitar o campo genérico `args` e mostrar
+ * "distância [  ] mm" em vez de "args: ______".
+ */
+function guessParam(arg, fallback) {
+  const key = String(arg).toLowerCase();
+  const base = { label: ptFunctionLabel(arg) || arg, type: "expression", unit: "", value: "0" };
+
+  // o valor padrão manda: se é número, o campo é numérico
+  const asNumber = Number(String(fallback ?? "").replace(",", "."));
+  const isNumeric = Number.isFinite(asNumber) && fallback !== undefined && fallback !== null && fallback !== "";
+
+  const rules = [
+    [/(mm|milimetro|millimeter)/, { unit: "mm", type: "number" }],
+    [/(cm|centimetro|centimeter)/, { unit: "cm", type: "number" }],
+    [/(^|_)(mm_s|mm\/s|velocidade_mm|vel_mm|speed_mm)/, { unit: "mm/s", type: "number" }],
+    [/(^|_)(mm_s2|aceleracao|accel)/, { unit: "mm/s²", type: "number" }],
+    [/(graus|grau|angle|heading|giro|rotacao|rotation)/, { unit: "°", type: "number" }],
+    [/(rotacoes|rotation|turns|voll|volta)/, { unit: "voltas", type: "number" }],
+    [/(velocidade|speed|power|potencia|taxa|rate)/, { unit: "mm/s", type: "number" }],
+    [/(forca|force|torque|empuxo|push|tracao)/, { unit: "N", type: "number" }],
+    [/(porta|port)/, { type: "select" }],
+    [/(cor|color)/, { type: "select" }],
+    [/(lado|side)/, { type: "select" }],
+    [/(espera|wait|delay|pausa|p pausa|tempo|time|segundo|second)/, { unit: "ms", type: "number" }],
+    [/(robot|robo|chassis|base_robot|carro)/, { type: "text" }],
+    [/(hub|color|sensor)/, { type: "text" }],
+    [/(lista|list|itens|items)/, { type: "text" }],
+    [/(nome|name|rotulo|label|mensagem|message|texto|text)/, { type: "text" }],
+    [/(ligado|ligada|ativo|ativa|on|enable)/, { type: "boolean" }],
+  ];
+
+  for (const [pattern, shape] of rules) {
+    if (!pattern.test(key)) continue;
+    return { ...base, ...shape, value: isNumeric ? String(fallback) : shape.type === "boolean" ? "1" : base.value };
+  }
+
+  if (isNumeric) return { ...base, type: "number", value: String(fallback) };
+  if (typeof fallback === "string" && fallback && !/^[[({]/.test(fallback)) return { ...base, type: "text", value: fallback };
+  return base;
+}
 
 async function copyText(text) {
   try { await navigator.clipboard.writeText(text); } catch { /* sem permissão */ }
@@ -1974,6 +2531,11 @@ const HUB_CMD_PACKET = 0x05;
 const HUB_CMD_CONFIRM = 0x06;
 const HUB_EVENT_OUTPUT = 0x07;
 const HUB_EVENT_INFO = 0x08;
+
+/** O usuário fechou a janela de busca do Bluetooth: não é erro. */
+const isUserCancel = (error) =>
+  error?.name === "NotFoundError" && /cancel|user/i.test(error?.message ?? "") ||
+  /user cancelled|user canceled/i.test(error?.message ?? "");
 
 /* ------------------------------------------------------------------ */
 /* Utilidades                                                          */

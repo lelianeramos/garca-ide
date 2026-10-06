@@ -136,9 +136,113 @@
   padding-bottom: 9px;
 }
 
+/*
+ * O chapéu "quando o programa iniciar" também tem cavidade: o que fica
+ * embaixo dele é o CORPO do programa (a função main()). Sem esta regra o
+ * encaixe ficava com 31px, curto demais para a primeira pilha de blocos.
+ */
+.program-block.shape-hat:has(> .gb-cavity) {
+  padding-bottom: 9px;
+}
+
+/* =============================================================================
+   PALETA: COMPACTA, MAS SEM ESCONDER (itens #11, #12)
+   ==========================================================================
+   REGRA IMPOSTA PELO USUARIO: "Nao faca crop que impeca o usuario de
+   entender qual e o bloco. A compactacao deve reduzir ruido visual, e nao
+   esconder informacao essencial."
+
+   Entao o bloco da paleta tem DOIS estados de verdade:
+
+     • normal -> o rotulo CURTO, em uma linha. A crianca ve "quando iniciar"
+                 e ja sabe o que e.
+     • hover  -> o bloco CRESCE e mostra o rotulo COMPLETO, com os
+                 parametros padrao. 150ms.
+
+   Nada de reticencia silenciosa, nada de balão que demora. O nome inteiro
+   esta sempre a um hover de distancia — e o botao continua clicavel e
+   arrastavel, como antes.
+   ========================================================================== */
+
+.library-block {
+  position: relative;
+  display: block;
+  width: 100%;
+  text-align: left;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
+}
+
+.library-block:hover,
+.library-block:focus-visible {
+  transform: translateX(3px);
+  filter: brightness(1.14);
+  z-index: 5;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.26), 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .library-block { transition: none; }
+  .library-block:hover { transform: none; }
+}
+
+/*
+  Rotulo curto: sempre presente, NUNCA cortado.
+
+  Este era o ultimo resto de crop: `white-space:nowrap` + ellipsis cortava
+  "definir velocidade…" e "distância percorrida…" — a criança não sabia o
+  que o bloco fazia, que é exatamente o que o usuário proibiu ("não faça
+  crop que impeça o usuário de entender qual é o bloco").
+
+  A solução não é alargar a paleta a 320px, e sim quebrar a linha: o
+  rótulo curto ocupa no máximo DUAS linhas e sempre aparece inteiro. Um
+  nome em duas linhas lê melhor do que um nome em uma linha e meio.
+*/
+.library-block .lib-label-short {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  font-weight: 700;
+  line-height: 1.25;
+  overflow-wrap: break-word;
+  hyphens: auto;
+}
+
+/* Rotulo completo: escondido ate o hover, sem ocupar espaco. */
+.library-block .lib-label-full {
+  display: none;
+}
+
+.library-block:hover .lib-label-full,
+.library-block:focus-visible .lib-label-full {
+  display: block;
+  margin-top: 3px;
+  padding-top: 3px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.32);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  opacity: 0.95;
+  animation: gb-palette-open 0.15s ease both;
+}
+
+@keyframes gb-palette-open {
+  from { opacity: 0; transform: translateY(-2px); }
+  to   { opacity: 0.95; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .library-block:hover .lib-label-full { animation: none; }
+}
+
+
 .program-block .gb-cavity {
   display: block;
   flex-basis: calc(100% + 4px);
+  min-height: 31px;
   height: 31px;
   margin: 3px -5px 1px 17px;
   border-radius: 7px 0 0 7px;
@@ -148,6 +252,20 @@
   box-shadow:
     inset 0 0 0 1px rgba(0, 0, 0, 0.22),
     0 1px 0 rgba(255, 255, 255, 0.08);
+  transition: box-shadow .12s, background-color .12s, min-height .14s;
+}
+
+/* A cavidade cresce quando tem conteúdo — os blocos filhos a esticam. */
+.program-block .gb-cavity:has(> .block-stack.nested > *) {
+  height: auto;
+}
+
+/* Alvo de soltar: a cavidade acende para a criança ver onde o bloco vai cair. */
+.program-block .gb-cavity.drop-active {
+  background-color: #0d2c45;
+  box-shadow:
+    inset 0 0 0 2px rgba(7, 152, 255, 0.85),
+    0 0 14px rgba(7, 152, 255, 0.35);
 }
 
 .program-block .gb-field {
@@ -233,6 +351,84 @@
   font-size: 9px;
   font-weight: 750;
   white-space: nowrap;
+}
+
+/* ==================================================================
+ * CAMPO DE UNIDADE: [socket][seletor]
+ * ==================================================================
+ *
+ * O seletor é COLADO no socket, e não solto ao lado. Sem o grupo, a
+ * quebra de linha entre os dois desalinha o campo da borda do bloco e a
+ * frase "mover" ganha uma coluna fantasma de largura.
+ *
+ * `.gb-unit-control` é `inline-flex` com `gap: 0` justamente para os dois
+ * elementos se tocarem como se fossem um só — é o que faz `10 cm` parecer
+ * um campo, e não dois.
+ */
+.gb-unit-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  white-space: nowrap;
+}
+
+.gb-unit-control .gb-field.unit-field {
+  border-radius: 0 8px 8px 0;
+  border-left: none;
+  padding: 0 2px;
+  min-width: 34px;
+  font-size: 9px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.gb-unit-control .expr-field {
+  border-radius: 8px 0 0 8px;
+}
+
+/* ==================================================================
+ * CAMPO DE DIREÇÃO: [seletor][socket][unidade]
+ * ==================================================================
+ *
+ * O dropdown de direção vem PRIMEIRO, à esquerda do número, porque é
+ * ele que dá sentido ao número. Ler "100 mm" e só depois "para trás"
+ * obriga a criança a voltar e ler de novo.
+ *
+ * O mesmo motivo faz o seletor ser estreito: a direção é uma palavra
+ * curta (frente/tras, esquerda/direita) e não pode comer a largura do
+ * número, que é o que ela varia.
+ */
+.gb-direction-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  white-space: nowrap;
+}
+
+.gb-direction-control .direction-field {
+  border-radius: 8px 0 0 8px;
+  padding: 0 2px 0 4px;
+  min-width: 62px;
+  font-size: 10px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.gb-direction-control .expr-field {
+  border-radius: 0;
+}
+
+/*
+ * Direção indefinida (o valor é variável ou expressão).
+ *
+ * O seletor continua visível e desabilitado, em vez de sumir: sua
+ * ausência faria o número pular de posição quando a criança encaixasse
+ * um bloco, e o layout "dançaria" no meio da edição. Apagado fica claro
+ * que não há direção a escolher.
+ */
+.gb-direction-control .direction-field:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .gb-toggle {

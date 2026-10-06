@@ -19,10 +19,106 @@
 
 import http from "node:http";
 import { readFile } from "node:fs/promises";
-import { extname, join, normalize, resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, extname, join, normalize, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { invokeVercelHandler } from "./vercel-shim.mjs";
 
+/*
+ * CADEIA DE CERTIFICADOS QUE O NODE PRECISA CONHECER.
+ *
+ * O `fetch` do Node tem a própria lista de CAs e NÃO usa a store do
+ * sistema. Atrás de um proxy — rede corporativa, container, ambiente de
+ * teste — a conexão falha com "unable to verify the first certificate" e o
+ * GitHub aparece como "Não foi possível falar com o GitHub" mesmo com o
+ * token perfectly válido. É um problema de ambiente, não de código.
+ *
+ * A correção é APONTAR para o certificado do proxy, nunca desligar a
+ * verificação. `NODE_TLS_REJECT_UNAUTHORIZED=0` resolveria a conexão e
+ * acabaria com a validação de TLS no chão — não é assim que se trata
+ * credencial.
+ *
+ * A lista é montada na ordem: o que a pessoa configurou tem precedência, e
+ * depois os certificados do ambiente. `tools/dev-server.mjs` é reexecutado
+ * com a variável já montada, porque o Node lê essa lista na inicialização
+ * do TLS — setar aqui dentro não teria efeito.
+ */
+const CA_CANDIDATOS = [
+  "/etc/ssl/certs/ca-certificates.crt",
+  "/usr/local/share/ca-certificates/e2b-ca.crt",
+  "/usr/local/share/ca-certificates/*.crt",
+  "/etc/pki/tls/certs/ca-bundle.crt",
+];
+
+function montarCadeia() {
+  if (process.env.NODE_EXTRA_CA_CERTS) return null;
+  const partes = [];
+  for (const caminho of CA_CANDIDATOS) {
+    for (const arquivo of resolveCaminhos(caminho)) {
+      if (existsSync(arquivo)) partes.push(arquivo);
+    }
+  }
+  if (!partes.length) return null;
+  if (partes.length === 1) return partes[0];
+
+  /*
+   * UM ARQUIVO SÓ. O Node não aceita vários certificados em
+   * NODE_EXTRA_CA_CERTS separados por `:` — ele ignora o valor inteiro com
+   * "load failed" e segue sem CA nenhuma, o que devolve exatamente o
+   * "unable to verify the first certificate" que o bundle pretendia
+   * resolver. Os arquivos são concatenados num bundle temporário.
+   */
+  const destino = join(tmpdir(), `garca-ca-${process.pid}.pem`);
+  try {
+    writeFileSync(destino, partes.map((arquivo) => readFileSync(arquivo, "utf8")).join("\n"));
+    return destino;
+  } catch {
+    return partes[0];
+  }
+}
+
+function resolveCaminhos(caminho) {
+  if (!caminho.includes("*")) return [caminho];
+  const dir = dirname(caminho);
+  const prefixo = basename(caminho).replace("*", "");
+  try {
+    return readdirSync(dir)
+      .filter((nome) => nome.startsWith(prefixo))
+      .map((nome) => join(dir, nome));
+  } catch {
+    return [];
+  }
+}
+
+const CADEIA = montarCadeia();
+if (CADEIA && process.env.GARCA_CA_REEXEC !== "1") {
+  /*
+   * O processo filho é quem fica de pé.
+   *
+   * `spawnSync` com `stdio: inherit` funciona em terminal, mas num
+   * supervisor de processo deixa o pai segurando a porta enquanto a
+   * aplicação nunca sobe. `spawn` + repassar o término é o que mantém o
+   * comportamento de "um servidor, uma porta".
+   */
+  const filho = spawn(
+    process.execPath,
+    ["--use-openssl-ca", fileURLToPath(import.meta.url), ...process.argv.slice(2)],
+    { stdio: "inherit", env: { ...process.env, NODE_EXTRA_CA_CERTS: CADEIA, GARCA_CA_REEXEC: "1" } },
+  );
+  filho.on("exit", (codigo, sinal) => {
+    if (sinal) process.kill(process.pid, sinal);
+    else process.exit(codigo ?? 0);
+  });
+  for (const sinal of ["SIGINT", "SIGTERM"]) {
+    process.on(sinal, () => filho.kill(sinal));
+  }
+} else {
+  iniciar();
+}
+
+async function iniciar() {
 const ROOT = resolve(new URL("..", import.meta.url).pathname);
 
 /* ------------------------------------------------------------------ */
@@ -177,6 +273,7 @@ const GITHUB_HANDLERS = {
   "/api/github/commit": "api/github/commit.js",
   "/api/github/stats": "api/github/stats.js",
   "/api/github/avatar": "api/github/avatar.js",
+  "/api/github/status": "api/github/status.js",
 };
 
 http.createServer(async (request, response) => {
@@ -221,3 +318,4 @@ http.createServer(async (request, response) => {
     console.log("  Copie .env.example para .env e preencha para ativar os commits.");
   }
 });
+}

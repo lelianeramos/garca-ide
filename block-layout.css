@@ -1,0 +1,600 @@
+/* =============================================================================
+   LAYOUT DE BLOCOS — FLUXO VERTICAL DE EXECUÇÃO
+   =============================================================================
+   Este arquivo substitui coordenadas manuais por FLUXO DE CAIXA. É a
+   correção de raiz da sobreposição de blocos.
+
+   O que estava errado (medido, não suposto — ver docs/overlap-audit.md):
+
+     styles.css         .block-stack { position:absolute; left:70px; top:55px }
+     semantic-system.css .block-stack.nested { /* NÃO zerava position */ }
+
+   Como `position` não é herdado mas cada regra define o seu, a pilha aninhada
+   continuava ABSOLUTA: `left:70px; top:55px` relativos ao bloco-pai. Ela
+   saía do fluxo e era pintada por cima dos irmãos seguintes. Por isso dois
+   blocos "conectados" ocupavam as mesmas coordenadas, e por isso o próximo
+   bloco de um `se`/`repetir` não descia sozinho.
+
+   A regra estrutural agora é uma só:
+
+     • a RAIZ da pilha continua ancorada no canvas (precisa ser isso para o
+       pan/zoom funcionar);
+     • TODA pilha aninhada volta para o fluxo normal;
+     • a altura de um container é a soma dos filhos — o browser reflowa.
+
+   Consequência: `nextY = altura do pai + espaçamento` deixa de ser um cálculo
+   e passa a ser o comportamento padrão. Não há mais `top:` escrito à mão.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------- */
+/* 1. A ÂNCORA DO CANVAS (apenas a raiz)                                */
+/* --------------------------------------------------------------------- */
+
+.gb-stack-root {
+  position: absolute;
+  left: 70px;
+  top: 55px;
+  width: min(390px, calc(100vw - 40px));
+  min-width: 260px;
+}
+
+/* --------------------------------------------------------------------- */
+/* 2. QUALQUER PILHA NÃO-RAIZ: FLUXO NORMAL                              */
+/* --------------------------------------------------------------------- */
+/*
+   Esta é a correção de raiz. `static` devolve a pilha ao fluxo, então:
+     - a altura do container cresce com os filhos automaticamente;
+     - o próximo bloco da sequência desce sozinho;
+     - nenhum bloco pode ocupar a coordenada de outro.
+*/
+
+.gb-stack,
+.gb-stack-root .block-stack {
+  /*
+   * REGRA DE OURO DO LAYOUT: nada que esteja DENTRO de um bloco pode ser
+   * absoluto em relação à página. Se for, cada corpo de bloco em C se
+   * empilha na mesma coordenada e o programa vira uma colisão de caixas.
+   *
+   * A classe `gb-stack` é aplicada pelo RENDERIZADOR a toda pilha criada
+   * dentro de uma cavidade. Se um dia alguém criar uma pilha sem ela, esta
+   * regra não pega — e por isso a defesa também existe no JavaScript
+   * (`pilhaDaCavidade`), que garante uma pilha só por cavidade.
+   */
+  position: static;
+  left: auto;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  transform: none;
+  float: none;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  inset: auto;
+}
+
+/* Rede de segurança: NENHUMA pilha dentro de um bloco pode ser absoluta. */
+.program-block .block-stack,
+.gb-cavity > .block-stack {
+  position: static;
+  left: auto;
+  top: auto;
+  width: auto;
+  margin: 0;
+  padding: 0;
+}
+
+/* a raiz continua ancorada: re-declara o que o reset acima tirou */
+.gb-stack-root {
+  position: absolute;
+  left: 70px;
+  top: 55px;
+  width: min(390px, calc(100vw - 40px));
+  min-width: 260px;
+  margin: 0;
+  padding: 0;
+}
+
+/* --------------------------------------------------------------------- */
+/* 3. SUB-PAINEL DE CAMPOS (item #9)                                    */
+/* --------------------------------------------------------------------- */
+/*
+   O bloco "motores de movimento" carregava a frase inteira numa linha só:
+   "definir motores de movimento para [B] + [C] com roda de (62,4) mm e eixo
+   de (48) mm" — mais de 500px e quatro ideias misturadas.
+
+   Agora a frase é curta e a geometria fica num painel de duas colunas com
+   rótulos próprios. Cabe na mesma altura, lê em um segundo e não compete com
+   o resto da pilha.
+*/
+
+.program-block .gb-panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 7px 0 2px;
+  padding-top: 7px;
+  border-top: 1px solid rgba(0, 0, 0, 0.16);
+}
+
+.program-block .gb-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.program-block .gb-cell-label {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  text-transform: lowercase;
+  white-space: nowrap;
+}
+
+/* O par {left} + {right} recebe um "+" de verdade entre os dois campos. */
+.program-block .gb-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.program-block .gb-pair .gb-plus {
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+/* --------------------------------------------------------------------- */
+/* 4. UNIDADE COLADA NO NÚMERO (compact: true)                           */
+/* --------------------------------------------------------------------- */
+/*
+   O seletor de medida (voltas / cm / mm) fica DENTRO do campo numérico, sem
+   a seta e com a largura do texto. Sem isto o bloco dizia
+   "por (50) rotações" e a seta do <select> empurrava a frase para 390px.
+*/
+
+.program-block .gb-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+}
+
+.program-block .unit-field {
+  width: auto;
+  min-width: 0;
+  max-width: 92px;
+  height: 27px;
+  padding: 0 4px 0 7px;
+  border: 0;
+  border-left: 1px solid rgba(3, 20, 34, 0.18);
+  border-radius: 0 8px 8px 0;
+  background: transparent !important;
+  color: #102438 !important;
+  font-size: 11px;
+  font-weight: 750;
+  font-family: inherit;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.program-block .unit-field:hover {
+  background: rgba(3, 20, 34, 0.07) !important;
+}
+
+.program-block .unit-field option {
+  color: #102438;
+  background: #f8fbff;
+}
+
+/* Com a unidade colada, o número não precisa da própria borda dupla. */
+.program-block .gb-value:has(> .unit-field) > .number-field {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+/* --------------------------------------------------------------------- */
+/* 5. ESPAÇAMENTO ENTRE BLOCOS CONECTADOS                                */
+/* --------------------------------------------------------------------- */
+/*
+   `--gb-gap` é o "espaçamento de conexão" do enunciado. O conector visual
+   (o ressalto embaixo) é desenhado com `::after` e transborda o bloco em
+   4px; o gap de 3px impede que o conector do bloco de cima encoste no
+   próximo — que é o que produzia a aparência de bloco sobreposto.
+*/
+
+.gb-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--gb-gap, 3px);
+}
+
+.gb-stack > .program-block {
+  flex: 0 0 auto;
+}
+
+/* --------------------------------------------------------------------- */
+/* 6. BLOCO: CAIXA COM ALTURA DEFINIDA PELO PRÓPRIO CONTEÚDO              */
+/* --------------------------------------------------------------------- */
+
+.program-block {
+  position: relative;
+  box-sizing: border-box;
+  display: flow-root;
+  width: max-content;
+  max-width: min(390px, calc(100vw - 50px));
+  min-width: 190px;
+}
+
+/*
+  A FRASE DO BLOCO E UM FLUXO INTEIRO.
+
+  `.block-content` e um flex container. Com `flex-wrap: wrap`, cada palavra
+  e cada controle viravam flex-itens independentes: a unidade "cm" quebrava
+  de linha sozinha e o botao de expandir caia no meio do bloco.
+
+  A correcao e tratar a frase como TEXTO com controles dentro. `.block-text`
+  vira um fluxo normal (nao flex) e os controles continuam sendo atomicos
+  (inline-flex), entao nada quebra pela metade e o `>` nunca se solta.
+*/
+.program-block .block-content {
+  display: block;
+  line-height: 1.35;
+}
+
+.program-block .block-text {
+  display: block;
+}
+
+/* Controles permanecem caixas atomicas dentro do fluxo de texto. */
+.program-block .block-text .gb-field,
+.program-block .block-text .gb-value,
+.program-block .block-text .gb-argument,
+.program-block .block-text .gb-socket,
+.program-block .block-text .gb-library-name {
+  display: inline-flex;
+  vertical-align: middle;
+}
+
+/*
+  O BOTAO DE EXPANDIR fica no canto, sempre visivel, sem empurrar a frase.
+
+  `float` o soltava do fluxo e ele aterrissava no meio do bloco. Aqui ele
+  vira um item normal no fim da primeira linha, alinhado à direita.
+*/
+.program-block .block-content {
+  position: relative;
+  padding-right: 0;
+}
+
+.program-block.has-advanced .block-text {
+  padding-right: 25px;
+}
+
+.program-block .gb-expand {
+  position: absolute;
+  top: 0;
+  right: 0;
+  margin: 0;
+}
+
+/*
+  A CAPSULA: onde o valor mora.
+  
+  Todo grupo vizinho de controles vira um bloco indivisivel. Sem isso o
+  numero, a unidade e o parentesis de fechamento eram tres coisas soltas no
+  fluxo, e qualquer quebra de linha separava o "50" do "cm" e o ")" do
+  "(" -- exatamente o aspecto de "bloco quebrado" do primeiro relato.
+*/
+.program-block .gb-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  margin: 0 1px;
+  padding: 0 1px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.program-block .gb-group > .gb-value {
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(3, 20, 34, 0.16);
+}
+
+.program-block .gb-group > .unit-field {
+  margin: 0;
+  box-shadow: inset 0 0 0 1px rgba(3, 20, 34, 0.16);
+}
+
+/* Solto (sem vizinho), o numero tambem vira capsula fechada. */
+.program-block .block-text > .gb-value {
+  box-shadow: inset 0 0 0 1px rgba(3, 20, 34, 0.16);
+}
+
+/* O painel de extras e de geometria saem do fluxo, para o bloco crescer. */
+.program-block .gb-advanced,
+.program-block .gb-panel {
+  clear: both;
+}
+
+/*
+  `display:contents` no texto foi REMOVIDO de propósito: ele fazia a
+  unidade "cm" do seletor de medida virar um flex-item solto e quebrar de
+  linha sozinho. O par numero+unidade é `.gb-value`, que precisa continuar
+  siendo UMA caixa.
+*/
+.program-block .gb-value,
+.program-block .gb-argument,
+.program-block .gb-panel {
+  break-inside: avoid;
+}
+
+/*
+  UM BLOCO NUNCA E MAIS LARGO QUE O BLOCO QUE O CONTEM.
+
+  Era esse o motivo de os blocos dentro do chapeu do programa estourarem para
+  fora da borda amarela: cada bloco tinha `max-width` em `vw`, que nao tem
+  relacao nenhuma com a largura do pai. Um bloco de 390px dentro de um pai de
+  280px simplesmente transbordava.
+
+  Aqui a regra e em RELACAO ao pai, e nao a janela: um bloco nunca passa da
+  largura do espaco onde ele esta.
+*/
+.program-block .gb-stack > .program-block,
+.program-block > .program-block {
+  max-width: 100%;
+}
+
+/* O menor tambem vale dentro de um container estreito. */
+.program-block .gb-stack > .program-block {
+  min-width: 0;
+}
+
+/*
+   A cavidade é o "corpo" do container. Ela cresce com os filhos porque os
+   filhos estão em fluxo — nenhuma altura é fixada aqui. Um `min-height`
+   pequeno só garante um alvo de clique visível quando o container está vazio.
+*/
+.program-block .gb-cavity {
+  display: block;
+  box-sizing: border-box;
+  flex-basis: calc(100% + 4px);
+  min-height: 34px;
+  height: auto;
+  margin: 4px -5px 2px 17px;
+  border-radius: 8px 0 0 8px;
+  background-color: #071a2b;
+  background-image: radial-gradient(#284158 1px, transparent 1px);
+  background-size: 14px 14px;
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.22),
+    0 1px 0 rgba(255, 255, 255, 0.08);
+  transition: box-shadow 0.12s, background-color 0.12s;
+}
+
+.program-block .gb-cavity:has(> .gb-stack > *) {
+  min-height: 0;
+  background-image: radial-gradient(#223c50 1px, transparent 1px);
+}
+
+/* --------------------------------------------------------------------- */
+/* 7. CHAPÉU: NÃO ACEITA BLOCO ACIMA                                      */
+/* --------------------------------------------------------------------- */
+/*
+   O item #4 pede um formato de cabeçalho que não aceita conexão superior.
+   Garantimos isso também na ÁRVORE: `insertIntoBlock` recusa pai chapéu
+   quando se tenta encaixar em cima, e o gerador nunca emite um statement
+   antes do `def main():`.
+*/
+
+.program-block.shape-hat {
+  margin-top: 0;
+  padding-top: 16px;
+  border-radius: 34px 12px 7px 7px;
+}
+
+/* --------------------------------------------------------------------- */
+/* 8. ALVO DE SOLTAR                                                      */
+/* --------------------------------------------------------------------- */
+
+.program-block .gb-cavity.drop-active {
+  background-color: #0d2c45;
+  box-shadow:
+    inset 0 0 0 2px rgba(7, 152, 255, 0.85),
+    0 0 14px rgba(7, 152, 255, 0.35);
+}
+
+/* Incompatibilidade: o encaixe não aceita este bloco (item #8/#34).
+   Em vez de conectar, a interface mostra a recusa — o formato já diz que
+   não encaixa, mas o feedback durante o arrasto é o que fecha o ciclo. */
+.program-block .gb-cavity.drop-rejected {
+  background-color: #2a1414;
+  box-shadow: inset 0 0 0 2px rgba(255, 122, 122, 0.8);
+}
+
+/* --------------------------------------------------------------------- */
+/* 9. WORKSPACE VAZIO — DISCRETO E DEPOIS SUMIDO                         */
+/* --------------------------------------------------------------------- */
+/*
+   Item #3: sem "Nenhum bloco nesta saída". O vazio fala por si; a dica
+   aparece uma única vez e é uma linha fraca, longe de competir com os
+   blocos. Depois disso a área fica de fato vazia.
+*/
+
+.workspace-empty {
+  position: absolute;
+  top: 42%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: max-content;
+  max-width: 80%;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: center;
+  pointer-events: none;
+  animation: gb-empty-in 0.4s ease both;
+}
+
+.workspace-empty .empty-hint {
+  display: inline-block;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(10, 28, 45, 0.5);
+  color: #4d6b85;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* A dica nunca pode roubar o foco do programa. */
+.workspace-empty:empty {
+  display: none;
+}
+
+@keyframes gb-empty-in {
+  from { opacity: 0; transform: translate(-50%, calc(-50% + 6px)); }
+  to   { opacity: 1; transform: translate(-50%, -50%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-empty { animation: none; }
+}
+
+/* --------------------------------------------------------------------- */
+/* 10. RESPONSIVO — a pilha nunca estoura a tela                         */
+/* --------------------------------------------------------------------- */
+
+
+@media (max-width: 1120px) {
+  .gb-stack-root {
+    left: 28px;
+    top: 30px;
+    width: min(360px, calc(100vw - 265px));
+  }
+  .program-block {
+    max-width: min(360px, calc(100vw - 275px));
+  }
+}
+
+@media (max-width: 680px) {
+  .gb-stack-root {
+    left: 20px;
+    top: 20px;
+    width: min(320px, calc(100vw - 200px));
+  }
+  .program-block {
+    min-width: 165px;
+    max-width: min(320px, calc(100vw - 210px));
+  }
+}
+
+/* =============================================================================
+   SOCKETS ANINHADOS — o bloco dentro do bloco
+   ==========================================================================
+   A geometria do encaixe é o que ensina a criança que aquilo ali é um
+   bloco e não um texto. Um socket VAZIO é um contorno aberto; um socket
+   COM bloco é o bloco, desenhado com a forma dele.
+
+   Nada aqui usa position absoluta para "colocar" o filho: o bloco aninhado
+   entra no FLUXO do pai, como texto e campos fazem. É a mesma razão pela
+   qual as pilhas internas do workspace são estáticas — o layout deriva da
+   árvore, e o CSS não inventa posição.
+   ========================================================================== */
+
+.gb-socket {
+  display: inline-flex;
+  align-items: center;
+  min-width: 34px;
+  min-height: 20px;
+  vertical-align: middle;
+}
+
+/* Socket vazio: um encaixe visível, com a forma do que ele aceita. */
+.gb-socket-empty,
+.gb-socket:not(.gb-socket-filled) {
+  border: 2px dashed rgba(255, 255, 255, 0.45);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+/* Socket que aceita booleano: o contorno é hexagonal, igual ao bloco. */
+.gb-socket[data-accepts="boolean"],
+.gb-socket-boolean {
+  clip-path: polygon(
+    9px 0, calc(100% - 9px) 0, 100% 50%,
+    calc(100% - 9px) 100%, 9px 100%, 0 50%
+  );
+  border-radius: 0;
+  padding: 0 4px;
+}
+
+/* Socket preenchido: o bloco encaixado, com a cor da categoria dele. */
+.gb-socket-filled {
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.gb-nested-block {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color, #2b6ca8), white 12%);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: nowrap;
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.18);
+}
+
+.gb-nested-block.gb-socket-boolean {
+  padding: 2px 12px;
+  background: color-mix(in srgb, var(--color, #0acb72), white 10%);
+}
+
+/* O texto do bloco aninhado é o MESMO pipeline de controles do bloco de
+   primeira classe — por isso os parênteses somem dentro do encaixe. */
+.gb-nested-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.gb-nested-text .gb-field {
+  min-width: 26px;
+  height: 18px;
+  font-size: 10px;
+  padding: 0 5px;
+}
+
+/* O valor do bloco aninhado NUNCA aparece: o desenho já está ao lado.
+   O campo existe para que ler/escrever o parâmetro funcione. */
+.gb-nested-value {
+  display: none;
+}
+
+/* Lista de argumentos: cada item é um encaixe próprio. */
+.gb-sockets {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.gb-socket-sep {
+  opacity: 0.7;
+  font-weight: 700;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gb-socket-filled { transition: none; }
+}
