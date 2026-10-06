@@ -11,6 +11,7 @@
  */
 
 import { BLOCK_BY_ID } from "../blocks/blockCatalog.js";
+import { resolveParams, resolveValue } from "../blocks/socket.js";
 import { CLASS_MODULE, IMPORTABLE } from "../pybricks/apiRegistry.js";
 
 const INDENT = "    ";
@@ -30,10 +31,49 @@ export function blockToLines(block, depth = 0) {
   if (!spec) return [];
 
   const pad = INDENT.repeat(depth);
-  const raw = String(spec.py(block.params) ?? "");
+
+  /*
+    SOCKETS (src/blocks/socket.js)
+
+    Antes: `spec.py(block.params)` recebia os params crus. Um param que
+    guardava um bloco aninhado virava "[object Object]" no Python.
+
+    Agora os blocos aninhados são resolvidos para o SEU Python antes de a
+    função `py` do bloco pai ser chamada. O pai continua unaware: ele só
+    interpola strings, como sempre fez. É por isso que os 134 blocos do
+    catálogo ganham suporte a expressões encaixadas sem nenhuma reescrita.
+  */
+  const raw = String(spec.py(resolveParams(block, (child) => blockToPython(child))) ?? "");
   const head = raw.split("\n").map((line) => (line.trim() ? pad + line : "")).join("\n").split("\n");
 
   const out = [...head];
+
+  /*
+    CADEIA `if` / `elif` / `else`.
+
+    O bloco guarda `branches` com a condição e o corpo de CADA ramo. Sem
+    isto, um `if/elif/else` do Python voltava como vários `if` separados —
+    que não é o mesmo programa: o `else` compartilhado mudaria de ramo e o
+    `elif` perderia a guarda.
+
+    O `if ...:` já foi emitido por `spec.py()` acima. Aqui entram os corpos
+    na ordem certa: corpo do `if`, depois cada `elif` com seu corpo, e só
+    então o `else`. Emitir os `elif` ANTES do corpo do `if` — o que acontecia
+    na primeira versão deste código — embaralhava a saída.
+  */
+  if (Array.isArray(block.branches) && block.branches.length > 1) {
+    for (const [index, branch] of block.branches.entries()) {
+      if (index > 0) out.push(`${pad}elif ${branchText(branch.condition)}:`);
+      const body = branch.children || [];
+      if (body.length === 0) out.push(`${pad}${INDENT}pass`);
+      for (const child of body) out.push(...blockToLines(child, depth + 1));
+    }
+    if (Array.isArray(block.elseChildren) && block.elseChildren.length > 0) {
+      out.push(`${pad}else:`);
+      for (const child of block.elseChildren) out.push(...blockToLines(child, depth + 1));
+    }
+    return out;
+  }
 
   const hasBody = Boolean(spec.block);
   if (hasBody) {
@@ -41,9 +81,8 @@ export function blockToLines(block, depth = 0) {
     if (children.length === 0) out.push(`${pad}${INDENT}pass`);
     for (const child of children) out.push(...blockToLines(child, depth + 1));
 
-    if (spec.elseBranch && Array.isArray(block.elseChildren)) {
+    if (spec.elseBranch && Array.isArray(block.elseChildren) && block.elseChildren.length > 0) {
       out.push(`${pad}else:`);
-      if (block.elseChildren.length === 0) out.push(`${pad}${INDENT}pass`);
       for (const child of block.elseChildren) out.push(...blockToLines(child, depth + 1));
     }
   }
@@ -51,8 +90,27 @@ export function blockToLines(block, depth = 0) {
   return out;
 }
 
+/**
+ * Texto de uma condição já resolvida: um socket pode conter um bloco
+ * aninhado, um valor cru ou uma string vinda do Python.
+ */
+function branchText(condition) {
+  const value = resolveValue(condition, (block) => blockToPython(block));
+  const text = String(value ?? "").trim();
+  return text || "True";
+}
+
 export function blockToPython(block, depth = 0) {
   return blockToLines(block, depth).join("\n");
+}
+
+/**
+ * O bloco "quando o programa iniciar" é a função `main()` do Pybricks.
+ * A checagem vem da ESPECIFICAÇÃO do bloco (`isMain`), e não do id solto,
+ * para que o nome do bloco possa mudar sem quebrar a geração.
+ */
+export function isMainBlock(block) {
+  return BLOCK_BY_ID.get(block?.blockId)?.isMain === true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -76,19 +134,18 @@ export function requiredImports(blocks) {
     for (const block of list || []) {
       const spec = BLOCK_BY_ID.get(block.blockId);
       if (!spec) continue;
+      // Cada símbolo é resolvido pelo SEU módulo (CLASS_MODULE). Antes, um
+      // símbolo sem entrada caía no primeiro módulo da lista e gerava
+      // "from pybricks.robotics import Port" — que nem existe.
       for (const symbol of spec.imports || []) {
-        const moduleName = spec.modules?.[0];
-        add(symbol, CLASS_MODULE[symbol] ?? moduleName);
+        const moduleName = CLASS_MODULE[symbol];
+        if (moduleName) add(symbol, moduleName);
+        else for (const candidate of spec.modules || []) add(symbol, candidate);
       }
-      // 11.16: bloco de biblioteca importa a função do módulo do VFS
-      if (spec.dynamicModule && block.params?.module && block.params?.name) {
-        add(block.params.name, block.params.module);
-      }
-      // símbolos extras declarados módulo a módulo
-      for (const moduleName of spec.modules || []) {
-        for (const symbol of spec.imports || []) {
-          if ((IMPORTABLE[moduleName] || []).includes(symbol)) add(symbol, moduleName);
-        }
+      // Função de um módulo do projeto: import real, escrito pelo usuário.
+      if (spec.dynamicModule && block.params?.module) {
+        const functionName = block.params.function ?? block.params.name;
+        if (functionName) add(functionName, block.params.module);
       }
       if (block.children?.length) visit(block.children);
       if (block.elseChildren?.length) visit(block.elseChildren);
@@ -97,7 +154,8 @@ export function requiredImports(blocks) {
 
   visit(blocks);
 
-  // randint vem de random (builtin MicroPython) — tratado à parte
+  // `randint` vem de `random` (builtin do MicroPython) e `remove_once` já
+  // está no módulo certo: nunca realoca símbolos entre módulos canônicos.
   for (const [moduleName, symbols] of needed.entries()) {
     if (symbols.has("randint") && moduleName !== "random") symbols.delete("randint");
   }
@@ -182,12 +240,25 @@ export function generateProgram(blocks, options = {}) {
   } = options;
 
   const body = [];
+  let hasMain = false;
   for (const block of blocks || []) {
     if (comments && shouldComment(block, body)) {
       body.push(describeBlock(block));
     }
     body.push(...blockToLines(block, 0));
     body.push("");
+    if (isMainBlock(block)) hasMain = true;
+  }
+
+  /*
+   * O HUB só executa o programa quando `main()` é chamada. O bloco
+   * "quando o programa iniciar" vira a função `main()`; a chamada no fim do
+   * arquivo é o que realmente faz o robô andar. Sem esta linha o código era
+   * sintaticamente válido e não fazia NADA.
+   */
+  if (hasMain) {
+    while (body.length && !body[body.length - 1].trim()) body.pop();
+    body.push("", "main()");
   }
 
   const needed = requiredImports(blocks || []);
@@ -330,15 +401,194 @@ export function removeBlock(code, block) {
 }
 
 /**
- * Insere um bloco novo logo após a linha `afterLine` (ou no fim do arquivo).
- * Usado ao arrastar um bloco da biblioteca para o canvas.
+ * Insere um bloco novo no arquivo.
+ *
+ * @param {string} code
+ * @param {object} block
+ * @param {number|string|null} after  'top' (logo abaixo dos imports, para blocos
+ *        de evento), 'bottom' (fim do arquivo) ou um número de linha.
+ *        Blocos de evento têm SEMPRE que ficar no topo do programa: um
+ *        "quando o programa iniciar" embaixo de outros comandos nunca dispara.
  */
-export function insertBlock(code, block, afterLine = null) {
-  const lines = String(code ?? "").replace(/\n+$/, "").split("\n");
+/**
+ * Descobre o intervalo de linhas que COMPARTILHA um nível de indentação.
+ * É o que permite inserir "dentro" de um `def`, `if`, `for`… sem reescrever
+ * o arquivo inteiro.
+ *
+ * @returns {{start:number,end:number}|null} [start, end) em índices de `lines`
+ */
+function indentedRange(lines, from) {
+  const baseIndent = (/^(\s*)/.exec(lines[from])?.[1] ?? "").length;
+  let end = from;
+  while (end < lines.length) {
+    const line = lines[end];
+    if (line.trim() === "") { end += 1; continue; }
+    const indent = (/^(\s*)/.exec(line)?.[1] ?? "").length;
+    if (indent <= baseIndent && end > from) break;
+    end += 1;
+  }
+  // linhas em branco no fim não contam como parte do corpo
+  while (end > from + 1 && lines[end - 1].trim() === "") end -= 1;
+  return { start: from, end };
+}
+
+/**
+ * Encontra a linha do `def main():` e devolve o ponto de inserção DENTRO
+ * dele, já com a indentação certa. `null` quando o programa não tem main.
+ */
+/** Índice da última linha com conteúdo (-1 quando o arquivo está vazio). */
+function lastNonEmptyLine(lines) {
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (lines[index].trim()) return index;
+  }
+  return -1;
+}
+
+function insertPointInsideMain(lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!/^def\s+main\s*\([^)]*\)\s*:\s*$/.test(lines[index])) continue;
+    const range = indentedRange(lines, index + 1);
+    // o corpo termina na última linha não-vazia antes de sair do bloco
+    let bodyEnd = range.end;
+    while (bodyEnd > index + 1 && lines[bodyEnd - 1].trim() === "") bodyEnd -= 1;
+    const onlyPass = bodyEnd === index + 1 && /^(\s*)pass\s*$/.test(lines[index + 1] ?? "");
+    if (onlyPass) return { line: index + 1, replace: [index + 1, index + 2] };
+    return { line: bodyEnd, replace: null };
+  }
+  return null;
+}
+
+/** Garante que exista um `main()` chamável no fim do arquivo. */
+function ensureMainCall(lines) {
+  for (const line of lines) {
+    if (/^main\s*\(\s*\)\s*$/.test(line.trim()) && !/^\s/.test(line)) return lines;
+  }
+  return [...trimBlankEdges(lines), "", "main()"];
+}
+
+/**
+ * Insere um bloco DENTRO de outro, no fim do corpo dele.
+ *
+ * O corpo do pai é delimitado pela indentação, não por uma contagem de linhas
+ * guardada em lugar nenhum — o Python é a fonte da verdade, e isso continua
+ * valendo depois de o usuário editar o texto à mão.
+ *
+ * @param {string} code
+ * @param {object} block bloco a inserir
+ * @param {string} parentBlockId id do bloco pai (tem `source.startLine`)
+ */
+export function insertIntoBlock(code, block, parentBlockId) {
+  const source = String(code ?? "");
+  const lines = source.replace(/\n+$/, "").split("\n");
+  const parentLine = parentSourceLine(code, parentBlockId);
+  if (parentLine === null) return { code: source, changed: false };
+
+  const header = lines[parentLine - 1];
+  if (header === undefined) return { code: source, changed: false };
+
+  const indentUnit = detectIndentUnit(lines);
+  const bodyIndent = (/^(\s*)/.exec(header)?.[1] ?? "") + indentUnit;
+  const range = indentedRange(lines, parentLine);
+
+  let bodyEnd = range.end;
+  while (bodyEnd > parentLine && lines[bodyEnd - 1].trim() === "") bodyEnd -= 1;
+
+  // corpo vazio (só `pass`): substitui o `pass` pelo bloco real
+  if (bodyEnd === parentLine + 1 && /^(\s*)pass\s*$/.test(lines[parentLine] ?? "")) {
+    const generated = blockToLines(block, 0).map((line) => (line ? bodyIndent + line : line));
+    lines.splice(parentLine, 1, ...generated);
+    return { code: normalize(lines.join("\n")), changed: true };
+  }
+
+  const generated = blockToLines(block, 0).map((line) => (line ? bodyIndent + line : line));
+  if (bodyEnd < lines.length && lines[bodyEnd]?.trim() !== "") generated.unshift("");
+  lines.splice(bodyEnd, 0, ...generated);
+  return { code: normalize(lines.join("\n")), changed: true };
+}
+
+/** Descobre a indentação usada no arquivo (4 espaços, tab, etc.). */
+function detectIndentUnit(lines) {
+  for (const line of lines) {
+    const match = /^(\t+| +)\S/.exec(line);
+    if (match) return match[1];
+  }
+  return INDENT;
+}
+
+/**
+ * Acha a linha 1-based de um bloco pelo seu span, andando pelo texto.
+ * `parentBlockId` já vem com a linha pronta nos casos normais; o fallback por
+ * nome de função cobre o chapéu do programa recem-inserido.
+ */
+function parentSourceLine(code, parentBlockId) {
+  if (typeof parentBlockId === "number") return parentBlockId;
+  const direct = /^(\d+)$/.exec(String(parentBlockId ?? ""));
+  if (direct) return Number(direct[1]);
+  const lines = String(code ?? "").split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    if (/^def\s+main\s*\(\s*\)\s*:\s*$/.test(lines[index])) return index + 1;
+  }
+  return null;
+}
+
+export function insertBlock(code, block, after = "bottom") {
+  let lines = String(code ?? "").replace(/\n+$/, "").split("\n");
   const generated = blockToLines(block, 0);
-  const position = afterLine === null || afterLine > lines.length ? lines.length : afterLine;
-  const next = [...lines.slice(0, position), ...generated, ...lines.slice(position)];
-  return { code: normalize(next.join("\n")), changed: true };
+  if (!generated.length) return { code: String(code ?? ""), changed: false };
+
+  if (isMainBlock(block)) {
+    // O chapéu entra logo abaixo dos imports, com corpo próprio.
+    const position = lastImportLine(lines);
+    if (lines[position]?.trim() !== "") lines.splice(position, 0, "");
+    lines.splice(position + (lines[position]?.trim() === "" ? 1 : 0), 0, ...generated);
+    lines = ensureMainCall(lines);
+    return { code: normalize(lines.join("\n")), changed: true };
+  }
+
+  if (after === "top") {
+    const position = lastImportLine(lines);
+    if (lines[position]?.trim() !== "") lines.splice(position, 0, "");
+  } else if (after === "bottom" || after === null || after === undefined) {
+    /*
+     * "Fim do programa" = dentro do main(), quando ele existe. Sem isso o
+     * bloco caía depois do `main()` e nunca era executado.
+     *
+     * A indentação do corpo vem do próprio arquivo: o bloco é escrito com a
+     * mesma unit de indentação que o `def main():` já usa.
+     */
+    const inside = insertPointInsideMain(lines);
+    if (inside) {
+      const mainIndex = lines.findIndex((l) => /^def\s+main\s*\(\s*\)\s*:\s*$/.test(l));
+      const indent = (/^(\s*)/.exec(lines[mainIndex] ?? "")?.[1] ?? "") + detectIndentUnit(lines);
+      const indented = generated.map((line) => (line ? indent + line : line));
+      const at = inside.replace ? inside.replace[0] : inside.line;
+      const end = inside.replace ? inside.replace[1] : at;
+      lines.splice(at, end - at, ...indented);
+      lines = ensureMainCall(lines);
+      return { code: normalize(lines.join("\n")), changed: true };
+    }
+    /*
+     * NÃO EXISTE `def main()` NO ARQUIVO.
+     *
+     * O caminho antigo devolvia `changed: false` aqui — ou seja, o bloco que
+     * a criança acabou de clicar na paleta era DESCARTADO, e o único efeito
+     * visível era um `main()` órfão aparecendo no fim do arquivo. Na tela
+     * parecia que "inserir bloco não funciona", e era exatamente isso.
+     *
+     * Agora o bloco é escrito no fim do código de verdade, e o `main()` é
+     * adicionado só SE o arquivo realmente precisar dele. Um programa com
+     * código solto (sem `def main()`) continua solto, que é como a criança
+     * escreveu.
+     */
+    const at = lastNonEmptyLine(lines);
+    lines = [...lines.slice(0, at + 1), ...generated, ...lines.slice(at + 1)];
+    return { code: normalize(lines.join("\n")), changed: true };
+  } else {
+    const position = Math.max(0, Math.min(Number(after) || 0, lines.length));
+    lines = [...lines.slice(0, position), ...generated, ...lines.slice(position)];
+  }
+
+  return { code: normalize(lines.join("\n")), changed: true };
 }
 
 /**

@@ -32,7 +32,7 @@ export class VirtualFileSystem {
     this.project = {
       id: project.id ?? uid("proj"),
       name: project.name ?? "garca_programacao",
-      version: 2,
+      version: 3,
       files: [],
       entrypoint: null,
       settings: project.settings ?? {},
@@ -99,7 +99,11 @@ export class VirtualFileSystem {
       if (!existing.some((folder) => folder.path === folderPath)) {
         existing.push({
           folder_id: uid("folder"), path: folderPath,
-          name: parts[index - 1], expanded: true,
+          name: parts[index - 1],
+          // A pasta que o usuário acabou de criar nasce ABERTA: é onde ele
+          // vai colocar o arquivo. As intermediárias também, para não
+          // obrigar três cliques para chegar ao que se acabou de criar.
+          expanded: true,
         });
       }
     }
@@ -402,15 +406,37 @@ function checksum(text) {
   return hash.toString(36);
 }
 
-/** Árvore pronta para renderizar: pastas e arquivos ordenados. */
+/**
+ * Árvore pronta para renderizar: pastas e arquivos ordenados.
+ *
+ * Item #15/#16 do pedido: o estado de expansão é POR PASTA e sobrevive ao
+ * re-render. Antes, cada nó nascia com `expanded: true` e o `buildTree` era
+ * chamado a cada `renderExplorer()` — fechar uma pasta e qualquer redesenhe
+ * (abrir arquivo, salvar) abria tudo de novo. Agora o estado vem do VFS, que
+ * guarda `expanded` por pasta e persiste com o projeto.
+ */
 export function buildTree(vfs) {
-  const root = { path: "/", name: vfs.project.name, folders: [], files: [], expanded: true };
+  const root = { path: "/", name: vfs.project.name, folders: [], files: [], expanded: true, id: "/" };
   const nodes = new Map([["/", root]]);
 
+  /*
+   * Pastas intermediárias: `nodeFor` cria o ancestral que ainda não existe
+   * (ex.: criar "/a/b/c.py" precisa de "/a" e "/a/b"). O estado dessas
+   * pastas intermediárias vem do VFS quando existe; senão, nasce fechada —
+   * abrir tudo por padrão transformava a árvore num tapete de arquivos.
+   */
   const nodeFor = (path) => {
     if (nodes.has(path)) return nodes.get(path);
     const parent = nodeFor(dirName(path));
-    const node = { path, name: baseName(path), folders: [], files: [], expanded: true };
+    const stored = vfs.folders?.find((folder) => folder.path === path);
+    const node = {
+      path,
+      name: baseName(path),
+      folders: [],
+      files: [],
+      id: path,
+      expanded: stored ? stored.expanded !== false : false,
+    };
     parent.folders.push(node);
     nodes.set(path, node);
     return node;

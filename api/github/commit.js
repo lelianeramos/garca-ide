@@ -2,7 +2,19 @@
 export default async function handler(request, response) {
   if (request.method !== 'POST') return response.status(405).json({ error: 'Método não permitido' });
   const token = process.env.GITHUB_TOKEN, repository = process.env.GITHUB_REPOSITORY, branch = process.env.GITHUB_BRANCH || 'main';
-  if (!token || !repository) return response.status(503).json({ error: 'Configure GITHUB_TOKEN e GITHUB_REPOSITORY na Vercel' });
+  if (!token || !repository) {
+    // Resposta EXATA do que falta. A interface mostra isso na tela em vez de
+    // um genérico "não foi possível" que fazia a equipe achar que o token
+    // estava errado quando o problema era outro.
+    const missing = [];
+    if (!token) missing.push('GITHUB_TOKEN');
+    if (!repository) missing.push('GITHUB_REPOSITORY');
+    return response.status(503).json({
+      error: `GitHub não configurado no servidor. Faltou: ${missing.join(' e ')}.`,
+      missing,
+      hint: 'Defina as variáveis no arquivo .env (local) ou no painel da Vercel > Settings > Environment Variables. O token nunca é enviado ao navegador.',
+    });
+  }
   const body = request.body || {}, files = Array.isArray(body.files) ? body.files : body.path ? [{ path: body.path, content: body.content }] : [];
   if (!files.length || files.length > 100) return response.status(400).json({ error: 'Nenhum arquivo válido para commit' });
   for (const file of files) {

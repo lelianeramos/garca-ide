@@ -18,8 +18,9 @@ import {
   renderLineNumbers, highlightCode, syncScroll, nextIndent, reindent,
   handlePairKey, completionContext, getCompletions, applyCompletion,
   completionPosition, cursorPosition, documentationAt, signatureHelp,
-  LINE_HEIGHT,
+  setLineHeight, lineTrack,
 } from "../editor/pythonEditor.js";
+import { measureEditor, verifyAlignment, pointToCaret, editorMetrics } from "../editor/editorMetrics.js";
 import { sound } from "./sound.js";
 
 const PAIR_KEYS = new Set(["(", "[", "{", '"', "'"]);
@@ -92,12 +93,38 @@ export class EditorView {
 
   revealLine(line) {
     if (!this.textarea) return;
-    const top = (line - 1) * LINE_HEIGHT;
-    const visible = this.textarea.clientHeight - 24;
+    const metrics = editorMetrics();
+    const top = metrics.paddingTop + (line - 1) * metrics.lineHeight;
+    const visible = this.textarea.clientHeight - metrics.paddingTop - metrics.paddingBottom;
     if (top < this.textarea.scrollTop || top > this.textarea.scrollTop + visible) {
       this.textarea.scrollTop = Math.max(0, top - visible / 2);
       syncScroll(this.textarea, this.gutter, this.highlight);
     }
+  }
+
+  /**
+   * Mede a métrica real do editor e a publica para o resto do código.
+   * Roda no boot, a cada refresh e quando a fonte/zoom/janela muda.
+   */
+  measure() {
+    const metrics = measureEditor(this.textarea);
+    setLineHeight(metrics.lineHeight);
+    this.metrics = metrics;
+    return metrics;
+  }
+
+  /**
+   * Autodiagnóstico do alinhamento (usado nos testes e no terminal).
+   * Se alguém reintroduzir diferença de CSS entre o realce e o textarea,
+   * isto acusa a diferença em vez de esconder com deslocamento artificial.
+   */
+  diagnose() {
+    this.measure();
+    const report = verifyAlignment(this.textarea, this.highlight);
+    if (!report.aligned) {
+      console.warn("[Garça Studio] editor desalinhado:", report.differences);
+    }
+    return report;
   }
 
   /* ------------------------------ eventos ------------------------------ */
@@ -141,6 +168,16 @@ export class EditorView {
     // Documentação ao passar o mouse (Parte 15.1)
     textarea.addEventListener("mousemove", (event) => this.handleHover(event));
     textarea.addEventListener("mouseleave", () => this.hideTooltip());
+
+    // Zoom do navegador, troca de fonte e redimensionamento mudam a métrica:
+    // remedimos para que nenhum valor "chutado" volte a aparecer.
+    this.resizeObserver?.disconnect();
+    if (typeof ResizeObserver === "function") {
+      this.resizeObserver = new ResizeObserver(() => this.refresh());
+      this.resizeObserver.observe(textarea);
+    }
+    this.onWindowResize = () => this.refresh();
+    window.addEventListener("resize", this.onWindowResize);
   }
 
   /**
@@ -372,20 +409,29 @@ export class EditorView {
   /** Redesenha régua + realce. Chamado a cada entrada e a cada rolagem. */
   refresh() {
     if (!this.textarea) return;
+    this.measure();
     const code = this.value;
     const lines = code.split("\n");
-    const activeLine = cursorPosition(code, this.caret).line;
+    const position = cursorPosition(code, this.caret);
 
-    // RÉGUA: um <div class="ln"> por linha — impossível concatenar
+    // RÉGUA: um <div class="ln"> por linha, dentro de uma trilha que desliza
     if (this.gutter) {
       const errorLines = this.diagnostics.filter((d) => d.severity === "error").map((d) => d.line);
-      this.gutter.replaceChildren(renderLineNumbers(lines.length, activeLine, errorLines));
-      this.gutter.style.transform = `translateY(${-this.textarea.scrollTop}px)`;
+      const track = renderLineNumbers(lines.length, position.line, errorLines);
+      const previous = lineTrack(this.gutter);
+      // Só reconstrói quando a quantidade de linhas ou a linha ativa mudam:
+      // evita reflow desnecessário a cada tecla.
+      if (!previous || previous.childElementCount !== lines.length ||
+          previous.querySelector(".ln-active")?.dataset.line !== String(position.line) ||
+          [...previous.children].some((node, index) => node.classList.contains("ln-error") !== errorLines.includes(index + 1))) {
+        this.gutter.replaceChildren(track);
+      }
+      syncScroll(this.textarea, this.gutter, this.highlight);
     }
 
     // Realce com sublinhado de erro (Parte 15.4)
     if (this.highlight) {
-      this.highlight.innerHTML = highlightCode(code, this.diagnostics, activeLine);
+      this.highlight.innerHTML = highlightCode(code, this.diagnostics, position.line);
       this.highlight.scrollTop = this.textarea.scrollTop;
       this.highlight.scrollLeft = this.textarea.scrollLeft;
     }
@@ -394,7 +440,7 @@ export class EditorView {
     if (this.ruler) this.renderRuler(lines.length);
 
     if (this.statusBar) {
-      this.statusBar.textContent = `Ln ${activeLine}, Col ${cursorPosition(code, this.caret).column}`;
+      this.statusBar.textContent = `Ln ${position.line}, Col ${position.column}`;
     }
   }
 
@@ -406,19 +452,21 @@ export class EditorView {
     }
     for (const entry of this.pythonOnly ?? []) marks.set(entry.line, "python");
 
+    const metrics = editorMetrics();
     const fragment = document.createDocumentFragment();
     for (const [line, severity] of marks.entries()) {
       if (line < 1 || line > totalLines) continue;
       const mark = document.createElement("i");
       mark.className = `ruler-mark ruler-${severity}`;
-      mark.style.top = `${(line - 1) * LINE_HEIGHT + 12}px`;
+      mark.style.top = `${metrics.paddingTop + (line - 1) * metrics.lineHeight}px`;
       mark.title = severity === "python"
-        ? "Linha somente em Python — sem representação em blocos (permanece intacta)"
+        ? "Linha somente em Python — o bloco Código Python a preserva intacta"
         : `Linha ${line}: ${this.diagnostics.find((d) => d.line === line)?.cause ?? "problema"}`;
       fragment.appendChild(mark);
     }
     this.ruler.replaceChildren(fragment);
-    this.ruler.style.transform = `translateY(${-this.textarea.scrollTop}px)`;
+    const track = this.ruler.querySelector(".ruler-track") ?? this.ruler;
+    track.style.transform = `translateY(${-this.textarea.scrollTop}px)`;
   }
 
   setDiagnostics(diagnostics, pythonOnly = []) {
@@ -445,18 +493,14 @@ function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 }
 
-/** Aproxima a posição do caret a partir do mouse (tooltip). */
+/** Aproxima a posição do caret a partir do mouse (apenas para o tooltip). */
 function caretFromMouse(textarea, event) {
-  const rect = textarea.getBoundingClientRect();
-  const paddingLeft = 53; const paddingTop = 12;
-  const charWidth = 7.2;
-  const column = Math.max(0, Math.round((event.clientX - rect.left + textarea.scrollLeft - paddingLeft) / charWidth));
-  const line = Math.max(0, Math.floor((event.clientY - rect.top + textarea.scrollTop - paddingTop) / LINE_HEIGHT));
+  const { line, column } = pointToCaret(textarea, event.clientX, event.clientY);
   const lines = textarea.value.split("\n");
-  if (line >= lines.length) return null;
+  if (line > lines.length) return null;
   let offset = 0;
-  for (let index = 0; index < line; index += 1) offset += lines[index].length + 1;
-  return Math.min(offset + column, textarea.value.length);
+  for (let index = 0; index < line - 1; index += 1) offset += lines[index].length + 1;
+  return Math.min(offset + column - 1, textarea.value.length);
 }
 
 export default EditorView;

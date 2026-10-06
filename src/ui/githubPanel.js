@@ -65,6 +65,64 @@ export class GitHubPanel {
     this.toggle?.setAttribute("aria-expanded", String(open));
   }
 
+  /* ------------------------------ status ------------------------------ */
+
+  /**
+   * Estado REAL da conexão com o GitHub.
+   *
+   * O botão "Atualizar código" falhava com "não foi possível atualizar"
+   * porque o frontend escondia a mensagem do servidor e porque ninguém
+   * mostrava se o token estava lá. Agora o servidor responde o que está
+   * configurado (sem NUNCA devolver o token) e a interface mostra o estado
+   * verdadeiro, incluindo o motivo exato quando falta alguma coisa.
+   */
+  async loadStatus() {
+    this.setConnection("checking", "Verificando GitHub…");
+    try {
+      const response = await fetch("/api/github/status", { headers: { Accept: "application/json" } });
+      const data = await response.json().catch(() => ({}));
+      this.status = data;
+      this.available = Boolean(data.authenticated);
+
+      if (!data.configured) {
+        this.setConnection("missing", "GitHub não configurado", data.missing ?? []);
+      } else if (!data.authenticated) {
+        this.setConnection("error", "GitHub recusou a conexão", [data.error ?? "Token inválido ou sem permissão no repositório"]);
+      } else {
+        this.setConnection("connected", "GitHub conectado", [], data);
+      }
+      return data;
+    } catch (error) {
+      this.status = { configured: false, authenticated: false, error: error.message };
+      this.available = false;
+      this.setConnection("error", "Servidor da API indisponível", [error.message]);
+      return this.status;
+    } finally {
+      // Os dados dos integrantes são buscados em seguida, em paralelo.
+      this.loadUsers();
+    }
+  }
+
+  setConnection(state, label, missing = [], data = null) {
+    this.connection = { state, label, missing, data };
+    const badge = document.getElementById("githubStatus");
+    if (!badge) return;
+    badge.dataset.state = state;
+    badge.title = [
+      label,
+      data?.repository ? `Repositório: ${data.repository}` : null,
+      data?.branch ? `Branch: ${data.branch}` : null,
+      data?.login ? `Conectado como @${data.login}` : null,
+      missing.length ? `Falta configurar: ${missing.join(", ")}` : null,
+    ].filter(Boolean).join("\n");
+    const text = badge.querySelector("b");
+    if (text) text.textContent = label;
+    const note = badge.querySelector("small");
+    if (note) note.textContent = state === "connected"
+      ? (data?.login ? `@${data.login}` : "repositório conectado")
+      : state === "checking" ? "…" : "veja Configurações";
+  }
+
   /* ------------------------------ usuários ------------------------------ */
 
   /**
@@ -83,9 +141,9 @@ export class GitHubPanel {
       this.renderContributorOptions();
       await this.loadAvatars();
       this.renderStack(this.users);
-      this.renderRanking();
+      this.renderLastCommit(data.lastCommit ?? null);
       if (!this.available) {
-        this.onLog?.("GitHub indisponível: GITHUB_TOKEN/GITHUB_REPOSITORY não configurados no servidor. Métricas não são inventadas.", "warning");
+        this.onLog?.(`GitHub indisponível: ${data.reason ?? "sem credenciais no servidor"}. As métricas não são inventadas.`, "warning");
       }
       return this.users;
     } catch (error) {
@@ -94,7 +152,6 @@ export class GitHubPanel {
       this.renderContributorOptions();
       await this.loadAvatars();
       this.renderStack(this.users);
-      this.renderRanking();
       this.onLog?.(`Não foi possível ler as métricas do GitHub (${error.message}). Estado: indisponível.`, "warning");
       return this.users;
     }
@@ -118,6 +175,26 @@ export class GitHubPanel {
         }
       } catch { /* mantém iniciais */ }
     }));
+  }
+
+  /** Último commit do repositório, com link para o GitHub. */
+  renderLastCommit(commit) {
+    const node = document.getElementById("lastCommit");
+    if (!node) return;
+    this.lastCommit = commit;
+    if (!commit?.sha) {
+      node.hidden = true;
+      node.replaceChildren();
+      return;
+    }
+    node.hidden = false;
+    const when = commit.date ? new Date(commit.date).toLocaleString("pt-BR") : "";
+    node.innerHTML =
+      `<span class="lc-label">Último commit</span>` +
+      `<span class="lc-body">${escapeHtml(commit.author ?? "—")} · ${escapeHtml(when)}</span>` +
+      `<span class="lc-msg">${escapeHtml(commit.message ?? "")}</span>` +
+      (commit.url ? `<a class="lc-link" href="${escapeHtml(commit.url)}" target="_blank" rel="noopener noreferrer">Ver commit</a>` : "");
+    this.lastCommitter = commit.authorLogin ?? null;
   }
 
   renderContributorOptions() {
@@ -252,6 +329,11 @@ export class GitHubPanel {
   /**
    * 19.3: commit atômico multi-arquivo via Git Data API (api/github/commit.js).
    * O caminho muda automaticamente com a saída ativa (19.1) e é somente leitura.
+   *
+   * DIFERENÇA IMPORTANTE: a falha mostra a mensagem REAL do servidor. Antes a
+   * interface dizia sempre "não foi possível atualizar o código" e a criança
+   * (e a equipe) não sabia o que consertar — parecendo que faltava token
+   * mesmo quando o problema era outro.
    */
   async commit() {
     if (this.busy) return;
@@ -285,7 +367,12 @@ export class GitHubPanel {
         }),
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error ?? `HTTP ${response.status}`);
+      if (!response.ok) {
+        const error = new Error(data.error ?? `O servidor respondeu HTTP ${response.status}.`);
+        error.status = response.status;
+        error.missing = data.missing;
+        throw error;
+      }
 
       this.lastCommitter = user.username ?? null;
       changed.forEach((file) => { file.gitStatus = "sincronizado"; file.modified = false; });
@@ -293,12 +380,26 @@ export class GitHubPanel {
       this.onToast?.("Código atualizado no GitHub.", "success");
       this.onLog?.(`Código atualizado no GitHub por ${user.name}. ${data.commit ?? ""}`, "success");
       this.renderStack(this.users);
+      this.renderLastCommit({
+        sha: data.sha,
+        url: data.commit,
+        author: user.name,
+        authorLogin: user.username,
+        message: (this.message?.value || "atualizar código").slice(0, 120),
+        date: new Date().toISOString(),
+      });
       await this.loadUsers();
       return data;
     } catch (error) {
       sound.play("error");
-      this.onToast?.("Não foi possível atualizar o código.", "error");
-      this.onLog?.(`Falha ao atualizar o código: ${error.message}`, "error");
+      // A mensagem do servidor é a informação mais útil que existe aqui.
+      const hint = error.missing?.length ? ` (falta: ${error.missing.join(", ")})` : "";
+      this.onToast?.(`${error.message}${hint}`, "error", 6000);
+      this.onLog?.(`Falha ao atualizar o código: ${error.message}${hint}`, "error");
+      if (error.status === 503) {
+        this.setConnection("missing", "GitHub não configurado", error.missing ?? ["GITHUB_TOKEN", "GITHUB_REPOSITORY"]);
+        this.onLog?.("Configure as variáveis de ambiente no servidor (arquivo .env local OU painel da Vercel). O token NUNCA vai para o navegador.", "info");
+      }
       return null;
     } finally {
       this.busy = false;
